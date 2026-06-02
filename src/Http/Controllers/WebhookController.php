@@ -72,13 +72,33 @@ class WebhookController extends Controller
         );
 
         if (!$event) {
-            // Duplicate, acknowledge silently
-            return response('<?xml version="1.0" encoding="UTF-8"?><Response />', 200)
-                ->header('Content-Type', 'application/xml');
+            return $this->sipgateXmlResponse($sipgateEvent);
         }
 
-        // Sipgate Push API requires XML response to continue sending follow-up events
-        return response('<?xml version="1.0" encoding="UTF-8"?><Response />', 200)
+        // Sipgate Push API: newCall response must declare onAnswer/onHangup URLs
+        // to receive follow-up events for the call lifecycle.
+        return $this->sipgateXmlResponse($sipgateEvent);
+    }
+
+    /**
+     * Build Sipgate XML response.
+     *
+     * For newCall events, the response must include onAnswer and onHangup
+     * attributes pointing back to this endpoint, otherwise Sipgate will
+     * not send follow-up events for the call.
+     */
+    protected function sipgateXmlResponse(string $sipgateEvent)
+    {
+        $webhookUrl = route('user-connectors.webhooks.sipgate');
+
+        if ($sipgateEvent === 'newCall') {
+            $xml = '<?xml version="1.0" encoding="UTF-8"?>'
+                . '<Response onAnswer="' . htmlspecialchars($webhookUrl) . '" onHangup="' . htmlspecialchars($webhookUrl) . '" />';
+        } else {
+            $xml = '<?xml version="1.0" encoding="UTF-8"?><Response />';
+        }
+
+        return response($xml, 200)
             ->header('Content-Type', 'application/xml');
     }
 
