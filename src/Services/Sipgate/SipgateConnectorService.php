@@ -56,7 +56,7 @@ class SipgateConnectorService
 
         try {
             $oauth2 = app(OAuth2Service::class);
-            $connection = $oauth2->refreshToken('sipgate', $connection);
+            $connection = $oauth2->refreshToken($connection);
 
             Log::info('Sipgate UC: Token refreshed', ['connection_id' => $connection->id]);
 

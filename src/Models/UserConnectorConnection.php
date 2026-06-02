@@ -19,6 +19,7 @@ class UserConnectorConnection extends Model
 
     protected $fillable = [
         'connector_id',
+        'oauth_app_id',
         'owner_user_id',
         'name',
         'is_default',
@@ -45,6 +46,11 @@ class UserConnectorConnection extends Model
     public function connector(): BelongsTo
     {
         return $this->belongsTo(UserConnector::class, 'connector_id');
+    }
+
+    public function oauthApp(): BelongsTo
+    {
+        return $this->belongsTo(UserConnectorOAuthApp::class, 'oauth_app_id');
     }
 
     public function ownerUser(): BelongsTo

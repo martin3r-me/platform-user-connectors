@@ -11,6 +11,40 @@ return [
 
     'guard' => 'web',
 
+    'oauth_defaults' => [
+        'microsoft365' => [
+            'authorize_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+            'token_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+            'scopes' => [
+                'openid', 'profile', 'email', 'offline_access',
+                'User.Read',
+                'Mail.ReadWrite', 'Mail.Send',
+                'Calendars.ReadWrite',
+                'Chat.Read', 'Chat.ReadWrite',
+                'ChannelMessage.Read.All', 'ChannelMessage.Send',
+                'Team.ReadBasic.All', 'Channel.ReadBasic.All',
+            ],
+            'extra_params' => ['prompt' => 'consent'],
+        ],
+        'ringcentral' => [
+            'authorize_url' => 'https://platform.ringcentral.com/restapi/oauth/authorize',
+            'token_url' => 'https://platform.ringcentral.com/restapi/oauth/token',
+            'scopes' => [],
+            'extra_params' => [],
+        ],
+        'sipgate' => [
+            'authorize_url' => 'https://login.sipgate.com/auth/realms/third-party/protocol/openid-connect/auth',
+            'token_url' => 'https://login.sipgate.com/auth/realms/third-party/protocol/openid-connect/token',
+            'scopes' => [
+                'balance:read', 'devices:callerid:read', 'devices:callerid:write',
+                'devices:read', 'devices:write', 'history:read',
+                'phonelines:read', 'phonelines:write', 'sessions:calls:write',
+                'sessions:sms:write', 'users:read',
+            ],
+            'extra_params' => [],
+        ],
+    ],
+
     'navigation' => [
         'user-connectors' => [
             'title' => 'Meine Connectoren',

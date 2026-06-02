@@ -5,19 +5,17 @@ namespace Platform\UserConnectors\Livewire\Connectors;
 use Livewire\Component;
 use Platform\Core\Models\User;
 use Platform\UserConnectors\Models\UserConnector;
+use Platform\UserConnectors\Models\UserConnectorOAuthApp;
 
 class Settings extends Component
 {
-    public ?int $editingConnectorId = null;
     public bool $modalShow = false;
+    public ?int $editingAppId = null;
+    public ?int $editingConnectorId = null;
 
+    public string $appName = '';
     public string $clientId = '';
     public string $clientSecret = '';
-    public string $authorizeUrl = '';
-    public string $tokenUrl = '';
-    public string $redirectDomain = '';
-    public string $scopes = '';
-    public string $extraParams = '';
 
     public function mount(): void
     {
@@ -42,85 +40,101 @@ class Settings extends Component
 
     public function render()
     {
-        $connectors = UserConnector::query()->orderBy('name')->get();
-
-        $connectors->each(function (UserConnector $connector) {
-            $connector->is_configured = !empty($connector->getOAuthConfig()['client_id'] ?? null);
-        });
+        $connectors = UserConnector::query()
+            ->with(['oauthApps' => fn ($q) => $q->orderBy('name')])
+            ->orderBy('name')
+            ->get();
 
         return view('user-connectors::livewire.connectors.settings', [
             'connectors' => $connectors,
         ])->layout('platform::layouts.app');
     }
 
-    public function editConnector(int $id): void
+    public function addApp(int $connectorId): void
     {
-        $connector = UserConnector::findOrFail($id);
-        $oauth = $connector->getOAuthConfig() ?? [];
+        $connector = UserConnector::findOrFail($connectorId);
 
-        $this->editingConnectorId = $id;
-        $this->clientId = $oauth['client_id'] ?? '';
-        $this->clientSecret = ''; // Never pre-fill secret
-        $this->authorizeUrl = $oauth['authorize_url'] ?? '';
-        $this->tokenUrl = $oauth['token_url'] ?? '';
-        $this->redirectDomain = $oauth['redirect_domain'] ?? '';
-        $this->scopes = implode(', ', $oauth['scopes'] ?? []);
-        $this->extraParams = !empty($oauth['extra_params'])
-            ? json_encode($oauth['extra_params'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
-            : '';
-
+        $this->editingAppId = null;
+        $this->editingConnectorId = $connectorId;
+        $this->appName = $connector->name;
+        $this->clientId = '';
+        $this->clientSecret = '';
         $this->modalShow = true;
     }
 
-    public function saveConnector(): void
+    public function editApp(int $appId): void
+    {
+        $app = UserConnectorOAuthApp::findOrFail($appId);
+
+        $this->editingAppId = $appId;
+        $this->editingConnectorId = $app->connector_id;
+        $this->appName = $app->name;
+        $this->clientId = $app->settings['client_id'] ?? '';
+        $this->clientSecret = '';
+        $this->modalShow = true;
+    }
+
+    public function saveApp(): void
     {
         $this->validate([
+            'appName' => 'required|string|max:255',
             'clientId' => 'required|string|max:500',
-            'authorizeUrl' => 'required|url|max:1000',
-            'tokenUrl' => 'required|url|max:1000',
-            'redirectDomain' => 'nullable|url|max:1000',
-            'scopes' => 'nullable|string|max:2000',
-            'extraParams' => 'nullable|string|max:2000',
         ]);
 
-        $connector = UserConnector::findOrFail($this->editingConnectorId);
+        if ($this->editingAppId) {
+            // Update existing
+            $app = UserConnectorOAuthApp::findOrFail($this->editingAppId);
+            $app->name = $this->appName;
 
-        $settings = $connector->settings ?? [];
+            $settings = $app->settings ?? [];
+            $settings['client_id'] = $this->clientId;
+            if ($this->clientSecret !== '') {
+                $settings['client_secret'] = $this->clientSecret;
+            }
+            $app->settings = $settings;
+            $app->save();
 
-        $existingOauth = $settings['oauth'] ?? [];
-
-        $scopes = array_values(array_filter(
-            array_map('trim', explode(',', $this->scopes))
-        ));
-
-        $extraParams = [];
-        if ($this->extraParams) {
-            $decoded = json_decode($this->extraParams, true);
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                $this->addError('extraParams', 'Extra-Parameter muss gültiges JSON sein.');
+            session()->flash('status', "OAuth-App '{$app->name}' aktualisiert.");
+        } else {
+            // Create new
+            if ($this->clientSecret === '') {
+                $this->addError('clientSecret', 'Client Secret ist bei neuen Apps erforderlich.');
                 return;
             }
-            $extraParams = $decoded;
+
+            $app = UserConnectorOAuthApp::create([
+                'connector_id' => $this->editingConnectorId,
+                'name' => $this->appName,
+                'settings' => [
+                    'client_id' => $this->clientId,
+                    'client_secret' => $this->clientSecret,
+                ],
+                'is_enabled' => true,
+            ]);
+
+            session()->flash('status', "OAuth-App '{$app->name}' erstellt.");
         }
 
-        $oauthConfig = [
-            'authorize_url' => $this->authorizeUrl,
-            'token_url' => $this->tokenUrl,
-            'client_id' => $this->clientId,
-            'client_secret' => $this->clientSecret ?: ($existingOauth['client_secret'] ?? ''),
-            'redirect_domain' => $this->redirectDomain ?: null,
-            'scopes' => $scopes,
-            'extra_params' => $extraParams,
-        ];
+        $this->closeModal();
+    }
 
-        $settings['oauth'] = $oauthConfig;
-        $connector->settings = $settings;
-        $connector->save();
+    public function deleteApp(int $appId): void
+    {
+        $app = UserConnectorOAuthApp::findOrFail($appId);
+        $name = $app->name;
+        $app->delete();
 
-        $this->modalShow = false;
-        $this->reset(['editingConnectorId', 'clientId', 'clientSecret', 'authorizeUrl', 'tokenUrl', 'redirectDomain', 'scopes', 'extraParams']);
+        session()->flash('status', "OAuth-App '{$name}' gelöscht.");
+    }
 
-        session()->flash('status', "OAuth-Konfiguration für '{$connector->name}' gespeichert.");
+    public function toggleAppEnabled(int $appId): void
+    {
+        $app = UserConnectorOAuthApp::findOrFail($appId);
+        $app->is_enabled = !$app->is_enabled;
+        $app->save();
+
+        $status = $app->is_enabled ? 'aktiviert' : 'deaktiviert';
+        session()->flash('status', "'{$app->name}' wurde {$status}.");
     }
 
     public function toggleEnabled(int $id): void
@@ -136,6 +150,6 @@ class Settings extends Component
     public function closeModal(): void
     {
         $this->modalShow = false;
-        $this->reset(['editingConnectorId', 'clientId', 'clientSecret', 'authorizeUrl', 'tokenUrl', 'redirectDomain', 'scopes', 'extraParams']);
+        $this->reset(['editingAppId', 'editingConnectorId', 'appName', 'clientId', 'clientSecret']);
     }
 }

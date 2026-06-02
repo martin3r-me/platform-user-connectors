@@ -46,9 +46,13 @@
                         <div class="flex items-center justify-between mb-2">
                             <h3 class="text-sm font-medium text-[var(--ui-secondary)]">{{ $connector->name }}</h3>
                             @if (in_array('oauth2', $connector->supported_auth_schemes ?? []))
-                                <x-ui-button variant="primary" size="sm" wire:click="startOAuth('{{ $connector->key }}')">
-                                    Verbinden
-                                </x-ui-button>
+                                @if ($connector->oauthApps->isNotEmpty())
+                                    <x-ui-button variant="primary" size="sm" wire:click="startOAuth('{{ $connector->key }}')">
+                                        Verbinden
+                                    </x-ui-button>
+                                @else
+                                    <x-ui-badge size="sm" variant="warning">Nicht konfiguriert</x-ui-badge>
+                                @endif
                             @endif
                         </div>
                         <p class="text-xs text-[var(--ui-muted)]">{{ $connector->meta['description'] ?? '' }}</p>
@@ -81,7 +85,11 @@
                                         @endif
                                     </h3>
                                     <p class="text-xs text-[var(--ui-muted)] mt-1">
-                                        {{ $connection->connector?->name ?? '?' }} &middot;
+                                        {{ $connection->connector?->name ?? '?' }}
+                                        @if ($connection->oauthApp)
+                                            &middot; {{ $connection->oauthApp->name }}
+                                        @endif
+                                        &middot;
                                         <x-ui-badge size="sm" variant="{{ $connection->status === 'active' ? 'success' : ($connection->status === 'error' ? 'danger' : 'warning') }}">
                                             {{ $connection->status }}
                                         </x-ui-badge>
@@ -134,4 +142,47 @@
             </x-ui-panel>
         @endif
     </x-ui-page-container>
+
+    {{-- App Selection Modal (when connector has multiple OAuth apps) --}}
+    @if ($appSelectModal)
+        <div class="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+            <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+                <div class="fixed inset-0 bg-gray-500/75 transition-opacity" wire:click="closeAppSelect"></div>
+                <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+
+                <div class="relative inline-block align-bottom bg-white rounded-2xl text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-md sm:w-full">
+                    <div class="px-6 pt-5 pb-4">
+                        <h3 class="text-lg font-medium text-[var(--ui-secondary)] mb-2" id="modal-title">
+                            OAuth-App auswählen
+                        </h3>
+                        <p class="text-sm text-[var(--ui-muted)] mb-4">
+                            Mehrere OAuth-Apps verfügbar. Bitte auswählen:
+                        </p>
+
+                        <div class="space-y-2">
+                            @php
+                                $selectableApps = $appSelectConnectorId
+                                    ? \Platform\UserConnectors\Models\UserConnectorOAuthApp::where('connector_id', $appSelectConnectorId)->where('is_enabled', true)->orderBy('name')->get()
+                                    : collect();
+                            @endphp
+                            @foreach ($selectableApps as $app)
+                                <button
+                                    wire:click="startOAuthWithApp({{ $app->id }})"
+                                    class="w-full text-left p-3 rounded-lg border border-[var(--ui-border)]/60 hover:border-[var(--ui-primary)] hover:bg-[var(--ui-primary)]/5 transition-colors"
+                                >
+                                    <span class="text-sm font-medium text-[var(--ui-secondary)]">{{ $app->name }}</span>
+                                </button>
+                            @endforeach
+                        </div>
+                    </div>
+
+                    <div class="border-t border-[var(--ui-border)] px-6 py-3 flex justify-end">
+                        <x-ui-button variant="secondary-outline" wire:click="closeAppSelect">
+                            Abbrechen
+                        </x-ui-button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    @endif
 </x-ui-page>

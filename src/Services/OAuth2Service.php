@@ -7,19 +7,26 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Platform\UserConnectors\Models\UserConnector;
 use Platform\UserConnectors\Models\UserConnectorConnection;
+use Platform\UserConnectors\Models\UserConnectorOAuthApp;
 use Platform\UserConnectors\Services\WebhookSubscriptionManager;
 
 class OAuth2Service
 {
-    public function buildAuthorizeUrl(string $connectorKey, string $state): string
+    public function buildAuthorizeUrl(UserConnectorOAuthApp $app, string $state): string
     {
-        $cfg = $this->getProviderConfig($connectorKey);
-        $scopes = $cfg['scopes'] ?? [];
+        $cfg = $app->getOAuthConfig();
 
         $authorizeUrl = $cfg['authorize_url'] ?? null;
         if (!$authorizeUrl) {
-            throw new \RuntimeException("authorize_url fehlt für '{$connectorKey}'.");
+            throw new \RuntimeException("authorize_url fehlt für OAuth-App '{$app->name}'.");
         }
+
+        if (empty($cfg['client_id'])) {
+            throw new \RuntimeException("client_id fehlt für OAuth-App '{$app->name}'.");
+        }
+
+        $connectorKey = $app->connector->key;
+        $scopes = $cfg['scopes'] ?? [];
 
         $params = [
             'response_type' => 'code',
@@ -38,31 +45,7 @@ class OAuth2Service
 
     public function redirectUri(string $connectorKey): string
     {
-        $callbackRoute = route('user-connectors.oauth2.callback', ['connectorKey' => $connectorKey]);
-
-        $cfg = $this->getProviderConfig($connectorKey);
-        $redirectDomain = $cfg['redirect_domain'] ?? null;
-
-        if ($redirectDomain) {
-            if (filter_var($callbackRoute, FILTER_VALIDATE_URL)) {
-                $path = parse_url($callbackRoute, PHP_URL_PATH);
-                $query = parse_url($callbackRoute, PHP_URL_QUERY);
-                $redirectUri = rtrim($redirectDomain, '/') . $path;
-                if ($query) {
-                    $redirectUri .= '?' . $query;
-                }
-            } else {
-                $redirectUri = rtrim($redirectDomain, '/') . '/' . ltrim($callbackRoute, '/');
-            }
-
-            return $redirectUri;
-        }
-
-        if (filter_var($callbackRoute, FILTER_VALIDATE_URL)) {
-            return $callbackRoute;
-        }
-
-        return url($callbackRoute);
+        return route('user-connectors.oauth2.callback', ['connectorKey' => $connectorKey]);
     }
 
     /**
@@ -70,8 +53,6 @@ class OAuth2Service
      */
     public function handleCallback(Request $request, string $connectorKey): UserConnectorConnection
     {
-        $cfg = $this->getProviderConfig($connectorKey);
-
         // Verify state
         $state = (string) $request->query('state', '');
         $expectedState = (string) $request->session()->pull('user-connectors.oauth2.state');
@@ -95,15 +76,24 @@ class OAuth2Service
             throw new \RuntimeException('Owner-User-ID fehlt.');
         }
 
-        $connector = UserConnector::query()->where('key', $connectorKey)->first();
-        if (!$connector) {
-            throw new \RuntimeException("Connector '{$connectorKey}' nicht gefunden.");
+        // Resolve OAuth App from session
+        $oauthAppId = (int) $request->session()->pull('user-connectors.oauth2.oauth_app_id', 0);
+        if ($oauthAppId <= 0) {
+            throw new \RuntimeException('OAuth-App-ID fehlt in der Session.');
         }
+
+        $oauthApp = UserConnectorOAuthApp::with('connector')->find($oauthAppId);
+        if (!$oauthApp || $oauthApp->connector->key !== $connectorKey) {
+            throw new \RuntimeException("OAuth-App #{$oauthAppId} nicht gefunden oder passt nicht zu '{$connectorKey}'.");
+        }
+
+        $connector = $oauthApp->connector;
+        $cfg = $oauthApp->getOAuthConfig();
 
         // Token exchange
         $tokenUrl = $cfg['token_url'] ?? null;
         if (!$tokenUrl) {
-            throw new \RuntimeException("token_url fehlt für '{$connectorKey}'.");
+            throw new \RuntimeException("token_url fehlt für OAuth-App '{$oauthApp->name}'.");
         }
 
         $tokenParams = [
@@ -122,6 +112,7 @@ class OAuth2Service
         if (!$resp->successful()) {
             \Log::error('UserConnectors OAuth2 Token Exchange Failed', [
                 'connector_key' => $connectorKey,
+                'oauth_app_id' => $oauthApp->id,
                 'status' => $resp->status(),
                 'body' => $resp->body(),
             ]);
@@ -157,12 +148,16 @@ class OAuth2Service
 
             $connection = new UserConnectorConnection([
                 'connector_id' => $connector->id,
+                'oauth_app_id' => $oauthApp->id,
                 'owner_user_id' => $ownerUserId,
                 'name' => UserConnectorConnection::generateName($connector->id, $ownerUserId, $connector->name),
                 'is_default' => $isFirst,
                 'capabilities' => $connector->capabilities,
             ]);
         }
+
+        // Always update oauth_app_id (also on reconnect)
+        $connection->oauth_app_id = $oauthApp->id;
 
         $credentials = $connection->credentials ?? [];
         $credentials['oauth'] = array_merge($credentials['oauth'] ?? [], [
@@ -184,6 +179,7 @@ class OAuth2Service
 
         \Log::info('UserConnectors OAuth2 Connection Saved', [
             'connector_key' => $connectorKey,
+            'oauth_app_id' => $oauthApp->id,
             'connection_id' => $connection->id,
         ]);
 
@@ -219,11 +215,16 @@ class OAuth2Service
     }
 
     /**
-     * Refresh tokens for a connection.
+     * Refresh tokens for a connection using its linked OAuth App.
      */
-    public function refreshToken(string $connectorKey, UserConnectorConnection $connection): UserConnectorConnection
+    public function refreshToken(UserConnectorConnection $connection): UserConnectorConnection
     {
-        $cfg = $this->getProviderConfig($connectorKey);
+        $oauthApp = $connection->oauthApp;
+        if (!$oauthApp) {
+            throw new \RuntimeException("Connection #{$connection->id} hat keine verknüpfte OAuth-App.");
+        }
+
+        $cfg = $oauthApp->getOAuthConfig();
         $oauth = $connection->credentials['oauth'] ?? [];
         $refreshToken = $oauth['refresh_token'] ?? null;
 
@@ -233,7 +234,7 @@ class OAuth2Service
 
         $tokenUrl = $cfg['token_url'] ?? null;
         if (!$tokenUrl) {
-            throw new \RuntimeException("token_url fehlt für '{$connectorKey}'.");
+            throw new \RuntimeException("token_url fehlt für OAuth-App '{$oauthApp->name}'.");
         }
 
         $resp = Http::asForm()->post($tokenUrl, [
@@ -273,36 +274,5 @@ class OAuth2Service
     public function newState(): string
     {
         return Str::random(32);
-    }
-
-    protected function getProviderConfig(string $connectorKey): array
-    {
-        // DB-first: read from UserConnector settings
-        $connector = UserConnector::query()->where('key', $connectorKey)->first();
-
-        if ($connector) {
-            $dbConfig = $connector->getOAuthConfig();
-            if ($dbConfig && !empty($dbConfig['client_id'])) {
-                if (empty($dbConfig['authorize_url']) || empty($dbConfig['token_url'])) {
-                    throw new \RuntimeException("OAuth2 Provider-Konfiguration unvollständig für '{$connectorKey}'.");
-                }
-
-                return $dbConfig;
-            }
-        }
-
-        // Fallback: config file (Übergangsphase)
-        $providers = (array) config('user-connectors.oauth2.providers', []);
-        $cfg = $providers[$connectorKey] ?? null;
-
-        if (!$cfg || empty($cfg['client_id'])) {
-            throw new \RuntimeException("OAuth2 Provider-Konfiguration fehlt für '{$connectorKey}'. Bitte in den Connector-Settings konfigurieren.");
-        }
-
-        if (empty($cfg['authorize_url']) || empty($cfg['token_url'])) {
-            throw new \RuntimeException("OAuth2 Provider-Konfiguration unvollständig für '{$connectorKey}'.");
-        }
-
-        return $cfg;
     }
 }

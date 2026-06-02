@@ -6,6 +6,7 @@ use Livewire\Component;
 use Platform\Core\Models\User;
 use Platform\UserConnectors\Models\UserConnector;
 use Platform\UserConnectors\Models\UserConnectorConnection;
+use Platform\UserConnectors\Models\UserConnectorOAuthApp;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365ConnectorService;
 use Platform\UserConnectors\Services\RingCentral\RingCentralConnectorService;
 use Platform\UserConnectors\Services\Sipgate\SipgateConnectorService;
@@ -16,18 +17,23 @@ class Index extends Component
     public ?string $syncMessage = null;
     public ?string $syncError = null;
 
+    public bool $appSelectModal = false;
+    public ?int $appSelectConnectorId = null;
+    public ?string $appSelectConnectorKey = null;
+
     public function render()
     {
         /** @var User $user */
         $user = auth()->user();
 
         $connectors = UserConnector::query()
+            ->with(['oauthApps' => fn ($q) => $q->where('is_enabled', true)->orderBy('name')])
             ->where('is_enabled', true)
             ->orderBy('name')
             ->get();
 
         $connections = UserConnectorConnection::query()
-            ->with('connector')
+            ->with(['connector', 'oauthApp'])
             ->where('owner_user_id', $user->id)
             ->orderByDesc('is_default')
             ->orderByDesc('updated_at')
@@ -58,16 +64,71 @@ class Index extends Component
         ])->layout('platform::layouts.app');
     }
 
+    /**
+     * Start OAuth: if connector has 1 app → direct, if multiple → show selector.
+     */
     public function startOAuth(string $connectorKey): void
     {
-        $url = route('user-connectors.oauth2.start', ['connectorKey' => $connectorKey]);
+        $connector = UserConnector::query()
+            ->with(['oauthApps' => fn ($q) => $q->where('is_enabled', true)])
+            ->where('key', $connectorKey)
+            ->first();
+
+        if (!$connector) {
+            session()->flash('error', "Connector '{$connectorKey}' nicht gefunden.");
+            return;
+        }
+
+        $apps = $connector->oauthApps;
+
+        if ($apps->isEmpty()) {
+            session()->flash('error', "Keine OAuth-App für '{$connector->name}' konfiguriert. Bitte in den Settings einrichten.");
+            return;
+        }
+
+        if ($apps->count() === 1) {
+            $this->startOAuthWithApp($apps->first()->id);
+            return;
+        }
+
+        // Multiple apps → show selection modal
+        $this->appSelectConnectorId = $connector->id;
+        $this->appSelectConnectorKey = $connectorKey;
+        $this->appSelectModal = true;
+    }
+
+    public function startOAuthWithApp(int $oauthAppId): void
+    {
+        $app = UserConnectorOAuthApp::with('connector')
+            ->where('id', $oauthAppId)
+            ->where('is_enabled', true)
+            ->first();
+
+        if (!$app) {
+            session()->flash('error', 'OAuth-App nicht gefunden oder nicht aktiv.');
+            return;
+        }
+
+        $this->appSelectModal = false;
+
+        $url = route('user-connectors.oauth2.start', [
+            'connectorKey' => $app->connector->key,
+            'oauth_app_id' => $app->id,
+        ]);
         $this->redirect($url);
+    }
+
+    public function closeAppSelect(): void
+    {
+        $this->appSelectModal = false;
+        $this->appSelectConnectorId = null;
+        $this->appSelectConnectorKey = null;
     }
 
     public function reconnect(int $connectionId): void
     {
         $connection = UserConnectorConnection::query()
-            ->with('connector')
+            ->with(['connector', 'oauthApp'])
             ->where('id', $connectionId)
             ->where('owner_user_id', auth()->id())
             ->first();
@@ -77,11 +138,19 @@ class Index extends Component
             return;
         }
 
-        $url = route('user-connectors.oauth2.start', [
-            'connectorKey' => $connection->connector->key,
-            'connection_id' => $connectionId,
-        ]);
-        $this->redirect($url);
+        // If connection has an oauth_app, use it directly
+        if ($connection->oauthApp) {
+            $url = route('user-connectors.oauth2.start', [
+                'connectorKey' => $connection->connector->key,
+                'oauth_app_id' => $connection->oauth_app_id,
+                'connection_id' => $connectionId,
+            ]);
+            $this->redirect($url);
+            return;
+        }
+
+        // No app linked → trigger app selection
+        $this->startOAuth($connection->connector->key);
     }
 
     public function testConnection(int $connectionId): void

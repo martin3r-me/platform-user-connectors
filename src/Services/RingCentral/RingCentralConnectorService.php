@@ -56,7 +56,7 @@ class RingCentralConnectorService
 
         try {
             $oauth2 = app(OAuth2Service::class);
-            $connection = $oauth2->refreshToken('ringcentral', $connection);
+            $connection = $oauth2->refreshToken($connection);
 
             Log::info('RingCentral UC: Token refreshed', ['connection_id' => $connection->id]);
 

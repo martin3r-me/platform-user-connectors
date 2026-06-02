@@ -59,7 +59,7 @@ class Microsoft365ConnectorService
 
         try {
             $oauth2 = app(OAuth2Service::class);
-            $connection = $oauth2->refreshToken('microsoft365', $connection);
+            $connection = $oauth2->refreshToken($connection);
 
             Log::info('Microsoft365: Token refreshed', ['connection_id' => $connection->id]);
 
