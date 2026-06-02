@@ -18,43 +18,12 @@ return [
             'route' => 'user-connectors.connections.index',
             'order' => 36,
         ],
-    ],
-
-    'oauth2' => [
-        'providers' => [
-            'microsoft365' => [
-                'authorize_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-                'token_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-                'client_id' => env('UC_MICROSOFT365_CLIENT_ID'),
-                'client_secret' => env('UC_MICROSOFT365_CLIENT_SECRET'),
-                'redirect_domain' => env('UC_MICROSOFT365_OAUTH_REDIRECT_DOMAIN'),
-                'scopes' => [
-                    'openid', 'profile', 'email', 'offline_access',
-                    'Mail.ReadWrite', 'Mail.Send',
-                    'Calendars.ReadWrite',
-                    'Chat.ReadWrite', 'ChannelMessage.Send',
-                    'User.Read',
-                ],
-                'extra_params' => [
-                    'prompt' => 'consent',
-                ],
-            ],
-            'ringcentral' => [
-                'authorize_url' => 'https://platform.ringcentral.com/restapi/oauth/authorize',
-                'token_url' => 'https://platform.ringcentral.com/restapi/oauth/token',
-                'client_id' => env('UC_RINGCENTRAL_CLIENT_ID'),
-                'client_secret' => env('UC_RINGCENTRAL_CLIENT_SECRET'),
-                'redirect_domain' => env('UC_RINGCENTRAL_OAUTH_REDIRECT_DOMAIN'),
-                'scopes' => ['ReadCallLog', 'ReadAccounts', 'ReadMessages', 'SMS', 'RingOut'],
-            ],
-            'sipgate' => [
-                'authorize_url' => 'https://login.sipgate.com/auth/realms/third-party/protocol/openid-connect/auth',
-                'token_url' => 'https://login.sipgate.com/auth/realms/third-party/protocol/openid-connect/token',
-                'client_id' => env('UC_SIPGATE_CLIENT_ID'),
-                'client_secret' => env('UC_SIPGATE_CLIENT_SECRET'),
-                'redirect_domain' => env('UC_SIPGATE_OAUTH_REDIRECT_DOMAIN'),
-                'scopes' => ['all'],
-            ],
+        'user-connectors-settings' => [
+            'title' => 'Connector-Settings',
+            'icon' => 'heroicon-o-cog-6-tooth',
+            'route' => 'user-connectors.connectors.settings',
+            'order' => 37,
+            'roles' => ['owner', 'admin'],
         ],
     ],
 

@@ -277,11 +277,26 @@ class OAuth2Service
 
     protected function getProviderConfig(string $connectorKey): array
     {
+        // DB-first: read from UserConnector settings
+        $connector = UserConnector::query()->where('key', $connectorKey)->first();
+
+        if ($connector) {
+            $dbConfig = $connector->getOAuthConfig();
+            if ($dbConfig && !empty($dbConfig['client_id'])) {
+                if (empty($dbConfig['authorize_url']) || empty($dbConfig['token_url'])) {
+                    throw new \RuntimeException("OAuth2 Provider-Konfiguration unvollständig für '{$connectorKey}'.");
+                }
+
+                return $dbConfig;
+            }
+        }
+
+        // Fallback: config file (Übergangsphase)
         $providers = (array) config('user-connectors.oauth2.providers', []);
         $cfg = $providers[$connectorKey] ?? null;
 
         if (!$cfg || empty($cfg['client_id'])) {
-            throw new \RuntimeException("OAuth2 Provider-Konfiguration fehlt für '{$connectorKey}'.");
+            throw new \RuntimeException("OAuth2 Provider-Konfiguration fehlt für '{$connectorKey}'. Bitte in den Connector-Settings konfigurieren.");
         }
 
         if (empty($cfg['authorize_url']) || empty($cfg['token_url'])) {
