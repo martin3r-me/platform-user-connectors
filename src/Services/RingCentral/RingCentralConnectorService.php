@@ -103,6 +103,10 @@ class RingCentralConnectorService
             $numberRecords = $phoneNumbers['records'] ?? [];
             $deviceRecords = $devices['records'] ?? [];
 
+            // Extension = phoneline equivalent
+            $extensionId = (string) ($extensionInfo['id'] ?? '');
+            $extensionName = $extensionInfo['name'] ?? $extensionInfo['extensionNumber'] ?? $this->connectorKey;
+
             $credentials = $connection->credentials ?? [];
             $credentials['profile'] = [
                 'user_info' => $extensionInfo,
@@ -115,8 +119,8 @@ class RingCentralConnectorService
             $connection->save();
 
             // Sync to structured tables
-            $this->syncPhoneNumbersToTable($connection, $numberRecords);
-            $this->syncDevicesToTable($connection, $deviceRecords);
+            $this->syncPhoneNumbersToTable($connection, $numberRecords, $extensionId, $extensionName);
+            $this->syncDevicesToTable($connection, $deviceRecords, $extensionId, $extensionName);
 
             Log::info("{$this->connectorKey} syncProfile: OK", [
                 'connection_id' => $connection->id,
@@ -131,7 +135,7 @@ class RingCentralConnectorService
         }
     }
 
-    protected function syncPhoneNumbersToTable(UserConnectorConnection $connection, array $numbers): void
+    protected function syncPhoneNumbersToTable(UserConnectorConnection $connection, array $numbers, string $extensionId, string $extensionName): void
     {
         $syncedIds = [];
 
@@ -163,20 +167,23 @@ class RingCentralConnectorService
                 default => 'voice',
             };
 
+            $label = $extensionName . ' · ' . $number;
+
             $record = UserConnectorPhoneNumber::updateOrCreate(
                 [
                     'connection_id' => $connection->id,
                     'number' => $number,
                 ],
                 [
-                    'label' => $item['label'] ?? $item['usageType'] ?? null,
+                    'label' => $label,
                     'type' => $type,
                     'capabilities' => $capabilities,
-                    'external_id' => (string) ($item['id'] ?? ''),
+                    'external_id' => $extensionId,
                     'meta' => array_filter([
+                        'phonelineAlias' => $extensionName,
                         'usageType' => $item['usageType'] ?? null,
                         'paymentType' => $item['paymentType'] ?? null,
-                        'type' => $item['type'] ?? null,
+                        'numberId' => $item['id'] ?? null,
                         'features' => $item['features'] ?? null,
                     ]),
                 ]
@@ -190,7 +197,7 @@ class RingCentralConnectorService
             ->delete();
     }
 
-    protected function syncDevicesToTable(UserConnectorConnection $connection, array $devices): void
+    protected function syncDevicesToTable(UserConnectorConnection $connection, array $devices, string $extensionId, string $extensionName): void
     {
         $syncedIds = [];
 
@@ -218,6 +225,7 @@ class RingCentralConnectorService
                     'type' => $type,
                     'is_online' => isset($item['status']) ? ($item['status'] === 'Online') : null,
                     'meta' => array_filter([
+                        'activePhonelines' => [['id' => $extensionId, 'alias' => $extensionName]],
                         'model' => $item['model'] ?? null,
                         'serial' => $item['serial'] ?? null,
                         'computerName' => $item['computerName'] ?? null,
