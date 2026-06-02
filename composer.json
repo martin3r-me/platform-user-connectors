@@ -1,0 +1,18 @@
+{
+    "name": "martin3r/platform-user-connectors",
+    "description": "User-centric communication connectors with unified interfaces (Microsoft 365, RingCentral)",
+    "type": "library",
+    "autoload": {
+        "psr-4": {
+            "Platform\\UserConnectors\\": "src/",
+            "Platform\\UserConnectors\\Database\\": "database/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Platform\\UserConnectors\\UserConnectorsServiceProvider"
+            ]
+        }
+    }
+}
