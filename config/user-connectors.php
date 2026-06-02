@@ -44,6 +44,7 @@ return [
             'scopes' => [
                 'balance:read', 'devices:callerid:read', 'devices:callerid:write',
                 'devices:read', 'devices:write', 'history:read',
+                'numbers:read',
                 'phonelines:read', 'phonelines:write', 'sessions:calls:write',
                 'sessions:sms:write', 'users:read',
             ],

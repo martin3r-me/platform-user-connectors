@@ -101,9 +101,10 @@ class SyncProfileTool implements ToolContract, ToolMetadataContract
                         $baseUrl = config('user-connectors.sipgate.api_base_url', 'https://api.sipgate.com/v2');
                         $http = Http::withToken($token)->timeout(10)->withHeaders(['Accept' => 'application/json']);
 
+                        $webuserId = $credentials['oauth']['sipgate_sub'] ?? 'w0';
                         $numbersResp = $http->get($baseUrl . '/numbers');
-                        $devicesResp = $http->get($baseUrl . '/devices');
-                        $smsResp = $http->get($baseUrl . '/sms');
+                        $devicesResp = $http->get($baseUrl . '/' . $webuserId . '/devices');
+                        $smsResp = $http->get($baseUrl . '/' . $webuserId . '/sms');
 
                         $diagnose['raw_api'] = [
                             'numbers' => ['status' => $numbersResp->status(), 'body' => $numbersResp->json()],

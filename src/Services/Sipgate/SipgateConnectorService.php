@@ -90,9 +90,13 @@ class SipgateConnectorService
             $http = Http::withToken($token)->timeout(10)->withHeaders(['Accept' => 'application/json']);
 
             $userInfo = $http->get($baseUrl . '/authorization/userinfo')->json() ?? [];
+
+            // Resolve webuserId (e.g. "w0") for user-scoped endpoints
+            $webuserId = $userInfo['sub'] ?? $connection->credentials['oauth']['sipgate_sub'] ?? null;
+
             $numbers = $http->get($baseUrl . '/numbers')->json() ?? [];
-            $devices = $http->get($baseUrl . '/devices')->json() ?? [];
-            $smsExtensions = $http->get($baseUrl . '/sms')->json() ?? [];
+            $devices = $webuserId ? ($http->get($baseUrl . '/' . $webuserId . '/devices')->json() ?? []) : [];
+            $smsExtensions = $webuserId ? ($http->get($baseUrl . '/' . $webuserId . '/sms')->json() ?? []) : [];
 
             $credentials = $connection->credentials ?? [];
 
