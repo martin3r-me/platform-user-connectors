@@ -106,10 +106,13 @@ class SyncProfileTool implements ToolContract, ToolMetadataContract
                         $devicesResp = $http->get($baseUrl . '/' . $webuserId . '/devices');
                         $smsResp = $http->get($baseUrl . '/' . $webuserId . '/sms');
 
+                        $phonelinesResp = $http->get($baseUrl . '/' . $webuserId . '/phonelines');
+
                         $diagnose['raw_api'] = [
                             'numbers' => ['status' => $numbersResp->status(), 'body' => $numbersResp->json()],
                             'devices' => ['status' => $devicesResp->status(), 'body' => $devicesResp->json()],
                             'sms' => ['status' => $smsResp->status(), 'body' => $smsResp->json()],
+                            'phonelines' => ['status' => $phonelinesResp->status(), 'body' => $phonelinesResp->json()],
                         ];
                     }
                 }
