@@ -76,7 +76,7 @@ class ListPhoneNumbersTool implements ToolContract, ToolMetadataContract
 
             $numbers = $query->orderByDesc('is_default')->orderBy('number')->get();
 
-            $result = $numbers->map(fn (UserConnectorPhoneNumber $phone) => [
+            $result = $numbers->map(fn (UserConnectorPhoneNumber $phone) => array_filter([
                 'id' => $phone->id,
                 'connection_id' => $phone->connection_id,
                 'connector' => $phone->connection?->connector?->key,
@@ -87,7 +87,9 @@ class ListPhoneNumbersTool implements ToolContract, ToolMetadataContract
                 'capabilities' => $phone->capabilities,
                 'is_default' => $phone->is_default,
                 'external_id' => $phone->external_id,
-            ])->all();
+                'phoneline' => $phone->meta['phonelineAlias'] ?? null,
+                'assigned' => $phone->meta['assigned'] ?? null,
+            ], fn ($v) => $v !== null))->all();
 
             return ToolResult::success([
                 'phone_numbers' => $result,

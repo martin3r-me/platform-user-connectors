@@ -46,7 +46,7 @@ return [
                 'devices:read', 'devices:write', 'history:read',
                 'numbers:read',
                 'phonelines:read', 'phonelines:write', 'sessions:calls:write',
-                'sessions:sms:write', 'users:read',
+                'sessions:sms:write', 'sms:read', 'users:read',
             ],
             'extra_params' => [],
         ],

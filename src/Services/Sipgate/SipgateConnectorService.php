@@ -96,6 +96,7 @@ class SipgateConnectorService
 
             $numbers = $http->get($baseUrl . '/numbers')->json() ?? [];
             $devices = $webuserId ? ($http->get($baseUrl . '/' . $webuserId . '/devices')->json() ?? []) : [];
+            $phonelines = $webuserId ? ($http->get($baseUrl . '/' . $webuserId . '/phonelines')->json() ?? []) : [];
             $smsExtensions = $webuserId ? ($http->get($baseUrl . '/' . $webuserId . '/sms')->json() ?? []) : [];
 
             $credentials = $connection->credentials ?? [];
@@ -107,12 +108,14 @@ class SipgateConnectorService
 
             $numberItems = $numbers['items'] ?? $numbers;
             $deviceItems = $devices['items'] ?? $devices;
+            $phonelineItems = $phonelines['items'] ?? $phonelines;
             $smsItems = $smsExtensions['items'] ?? $smsExtensions;
 
             $credentials['profile'] = [
                 'user_info' => $userInfo,
                 'numbers' => $numberItems,
                 'devices' => $deviceItems,
+                'phonelines' => $phonelineItems,
                 'sms_extensions' => $smsItems,
                 'synced_at' => now()->toIso8601String(),
             ];
@@ -121,7 +124,7 @@ class SipgateConnectorService
             $connection->save();
 
             // Sync to structured tables
-            $this->syncPhoneNumbersToTable($connection, $numberItems, $smsItems);
+            $this->syncPhoneNumbersToTable($connection, $numberItems, $phonelineItems, $smsItems);
             $this->syncDevicesToTable($connection, $deviceItems);
 
             Log::info('Sipgate syncProfile: OK', [
@@ -137,9 +140,15 @@ class SipgateConnectorService
         }
     }
 
-    protected function syncPhoneNumbersToTable(UserConnectorConnection $connection, array $numbers, array $smsExtensions): void
+    protected function syncPhoneNumbersToTable(UserConnectorConnection $connection, array $numbers, array $phonelines, array $smsExtensions): void
     {
         $smsCapableIds = collect($smsExtensions)->pluck('id')->filter()->all();
+
+        // Build phoneline lookup: id → alias
+        $phonelineMap = collect($phonelines)->keyBy('id')->map(fn ($pl) => $pl['alias'] ?? $pl['id'])->all();
+        // User's phoneline IDs
+        $userPhonelineIds = array_keys($phonelineMap);
+
         $syncedIds = [];
 
         foreach ($numbers as $item) {
@@ -159,20 +168,32 @@ class SipgateConnectorService
 
             $type = !empty($item['type']) ? strtolower($item['type']) : 'voice';
 
+            // Phoneline context
+            $phonelineAlias = $phonelineMap[$endpointId] ?? null;
+            $isAssigned = !empty($endpointId) && in_array($endpointId, $userPhonelineIds, true);
+
+            // Label: "Geschäft · 02173-9939668" or just localized if unassigned
+            $localized = $item['localized'] ?? null;
+            $label = $phonelineAlias
+                ? $phonelineAlias . ($localized ? ' · ' . $localized : '')
+                : $localized;
+
             $record = UserConnectorPhoneNumber::updateOrCreate(
                 [
                     'connection_id' => $connection->id,
                     'number' => $number,
                 ],
                 [
-                    'label' => $item['localized'] ?? null,
+                    'label' => $label,
                     'type' => $type,
                     'capabilities' => $capabilities,
-                    'external_id' => $endpointId,
+                    'external_id' => $endpointId ?: null,
                     'meta' => array_filter([
-                        'endpointId' => $endpointId,
+                        'endpointId' => $endpointId ?: null,
                         'endpointAlias' => $item['endpointAlias'] ?? null,
-                        'endpointUrl' => $item['endpointUrl'] ?? null,
+                        'phonelineAlias' => $phonelineAlias,
+                        'assigned' => $isAssigned,
+                        'localized' => $localized,
                     ]),
                 ]
             );
