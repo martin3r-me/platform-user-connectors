@@ -17,6 +17,7 @@ return new class extends Migration
 
             $table->string('name');
             $table->longText('settings')->nullable(); // encrypted JSON: client_id, client_secret
+            $table->string('settings_hash')->nullable();
             $table->boolean('is_enabled')->default(true);
             $table->timestamps();
 
