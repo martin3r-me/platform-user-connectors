@@ -170,11 +170,17 @@ class WebhookController extends Controller
         ]);
 
         $rcEvent = $payload['event'] ?? '';
-        $eventType = $this->mapRingCentralEventType($rcEvent);
 
         // Resolve connection via subscriptionId
         $connection = $this->inboundService->resolveConnectionFromRingCentral($payload);
 
+        // For telephony sessions, extract party status and emit per-party call events
+        if (str_contains($rcEvent, 'telephony/sessions')) {
+            $this->handleRingCentralTelephonySession($payload, $connection?->id);
+            return response('', 200);
+        }
+
+        $eventType = $this->mapRingCentralEventType($rcEvent);
         $subscriptionId = $payload['subscriptionId'] ?? '';
         $timestamp = $payload['timestamp'] ?? '';
         $idempotencyKey = hash('sha256', "{$subscriptionId}:{$rcEvent}:{$timestamp}");
@@ -188,6 +194,87 @@ class WebhookController extends Controller
         );
 
         return response('', 200);
+    }
+
+    /**
+     * Handle RingCentral telephony session notifications.
+     *
+     * RingCentral sends a single event type for all call state changes.
+     * The actual call status is in body.parties[].status.code.
+     * We extract the primary party and map its status to our call.* events.
+     */
+    protected function handleRingCentralTelephonySession(array $payload, ?int $connectionId): void
+    {
+        $body = $payload['body'] ?? [];
+        $parties = $body['parties'] ?? [];
+        $telephonySessionId = $body['telephonySessionId'] ?? null;
+        $sequence = $body['sequence'] ?? 0;
+        $eventTime = $body['eventTime'] ?? $payload['timestamp'] ?? null;
+        $subscriptionId = $payload['subscriptionId'] ?? '';
+
+        if (!$telephonySessionId || empty($parties)) {
+            return;
+        }
+
+        // Process only the subscriber's own party (has extensionId).
+        // External parties (PSTN, other accounts) are excluded by RingCentral anyway,
+        // but multiple parties can still appear in a single notification.
+        foreach ($parties as $party) {
+            $statusCode = $party['status']['code'] ?? null;
+            if (!$statusCode) {
+                continue;
+            }
+
+            // Skip parties without extensionId — they're external legs
+            if (empty($party['extensionId'])) {
+                continue;
+            }
+
+            $eventType = match ($statusCode) {
+                'Setup', 'Proceeding' => 'call.new',
+                'Answered' => 'call.answered',
+                'Disconnected', 'Gone' => 'call.hangup',
+                'Voicemail' => 'call.voicemail',
+                default => null,
+            };
+
+            if (!$eventType) {
+                continue;
+            }
+
+            $partyId = $party['id'] ?? '';
+            $direction = strtolower($party['direction'] ?? '');
+            $from = $party['from']['phoneNumber'] ?? $party['from']['name'] ?? null;
+            $to = $party['to']['phoneNumber'] ?? $party['to']['name'] ?? null;
+
+            // Build idempotency key from session + party + sequence
+            $idempotencyKey = hash('sha256', "{$telephonySessionId}:{$partyId}:{$statusCode}:{$sequence}");
+
+            // Flatten payload for InboundEventService extraction
+            $flatPayload = [
+                'telephonySessionId' => $telephonySessionId,
+                'callId' => $telephonySessionId,
+                'partyId' => $partyId,
+                'direction' => $direction,
+                'from' => $from,
+                'to' => $to,
+                'timestamp' => $eventTime,
+                'statusCode' => $statusCode,
+                'cause' => $party['status']['reason'] ?? null,
+                'answeringNumber' => $eventType === 'call.answered' ? ($to ?? null) : null,
+                'subscriptionId' => $subscriptionId,
+                '_rc_body' => $body,
+                '_rc_party' => $party,
+            ];
+
+            $this->inboundService->ingest(
+                connectorKey: 'ringcentral',
+                eventType: $eventType,
+                payload: $flatPayload,
+                idempotencyKey: $idempotencyKey,
+                connectionId: $connectionId,
+            );
+        }
     }
 
     protected function mapGraphResourceToEventType(string $resource, string $changeType): string
