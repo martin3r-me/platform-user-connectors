@@ -100,22 +100,61 @@
                                     @if ($connection->last_error)
                                         <p class="text-xs text-red-500 mt-1">{{ $connection->last_error }}</p>
                                     @endif
-                                    @php $profile = $connection->credentials['profile'] ?? null; @endphp
-                                    @if ($profile)
-                                        <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--ui-muted)]">
-                                            @if (!empty($profile['numbers']))
-                                                <span>Rufnummern: {{ collect($profile['numbers'])->pluck('number')->filter()->implode(', ') ?: count($profile['numbers']) . ' Nummern' }}</span>
-                                            @endif
-                                            @if (!empty($profile['devices']))
-                                                <span>Geräte: {{ count($profile['devices']) }}</span>
-                                            @endif
-                                            @if (!empty($profile['sms_extensions']))
-                                                <span>SMS: {{ count($profile['sms_extensions']) }}</span>
-                                            @endif
-                                            @if (!empty($profile['synced_at']))
-                                                <span>Sync: {{ \Carbon\Carbon::parse($profile['synced_at'])->diffForHumans() }}</span>
-                                            @endif
+                                    {{-- Phone Numbers --}}
+                                    @if ($connection->phoneNumbers->isNotEmpty())
+                                        <div class="mt-2 flex flex-wrap gap-1">
+                                            @foreach ($connection->phoneNumbers as $phone)
+                                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+                                                    {{ $phone->number }}
+                                                    @if ($phone->label)
+                                                        <span class="text-[var(--ui-muted)]">({{ $phone->label }})</span>
+                                                    @endif
+                                                    @if ($phone->capabilities)
+                                                        @foreach ($phone->capabilities as $cap)
+                                                            @switch($cap)
+                                                                @case('voice')
+                                                                    @svg('heroicon-o-phone', 'w-3 h-3 text-green-500')
+                                                                    @break
+                                                                @case('sms')
+                                                                    @svg('heroicon-o-chat-bubble-left', 'w-3 h-3 text-blue-500')
+                                                                    @break
+                                                                @case('fax')
+                                                                    @svg('heroicon-o-printer', 'w-3 h-3 text-orange-500')
+                                                                    @break
+                                                            @endswitch
+                                                        @endforeach
+                                                    @endif
+                                                    @if ($phone->is_default)
+                                                        @svg('heroicon-o-star', 'w-3 h-3 text-yellow-500')
+                                                    @endif
+                                                </span>
+                                            @endforeach
                                         </div>
+                                    @endif
+                                    {{-- Devices --}}
+                                    @if ($connection->devices->isNotEmpty())
+                                        <div class="mt-1 flex flex-wrap gap-1">
+                                            @foreach ($connection->devices as $device)
+                                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-50 text-gray-600 border border-gray-200">
+                                                    @if ($device->is_online === true)
+                                                        <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                                                    @elseif ($device->is_online === false)
+                                                        <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                                                    @else
+                                                        <span class="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
+                                                    @endif
+                                                    {{ $device->name }}
+                                                    <span class="text-[var(--ui-muted)]">({{ $device->type }})</span>
+                                                </span>
+                                            @endforeach
+                                        </div>
+                                    @endif
+                                    {{-- Sync timestamp from profile blob --}}
+                                    @php $syncedAt = $connection->credentials['profile']['synced_at'] ?? null; @endphp
+                                    @if ($syncedAt)
+                                        <p class="mt-1 text-xs text-[var(--ui-muted)]">
+                                            Sync: {{ \Carbon\Carbon::parse($syncedAt)->diffForHumans() }}
+                                        </p>
                                     @endif
                                 </div>
                                 <div class="flex items-center gap-2">

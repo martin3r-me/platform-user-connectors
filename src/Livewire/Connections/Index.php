@@ -36,7 +36,7 @@ class Index extends Component
             ->get();
 
         $connections = UserConnectorConnection::query()
-            ->with(['connector', 'oauthApp'])
+            ->with(['connector', 'oauthApp', 'phoneNumbers', 'devices'])
             ->where('owner_user_id', $user->id)
             ->orderByDesc('is_default')
             ->orderByDesc('updated_at')

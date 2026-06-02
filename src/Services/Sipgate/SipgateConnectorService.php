@@ -6,6 +6,8 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Platform\Core\Models\User;
 use Platform\UserConnectors\Models\UserConnectorConnection;
+use Platform\UserConnectors\Models\UserConnectorDevice;
+use Platform\UserConnectors\Models\UserConnectorPhoneNumber;
 use Platform\UserConnectors\Services\ConnectionResolver;
 use Platform\UserConnectors\Services\OAuth2Service;
 
@@ -99,21 +101,29 @@ class SipgateConnectorService
                 $credentials['oauth']['sipgate_sub'] = $userInfo['sub'];
             }
 
+            $numberItems = $numbers['items'] ?? $numbers;
+            $deviceItems = $devices['items'] ?? $devices;
+            $smsItems = $smsExtensions['items'] ?? $smsExtensions;
+
             $credentials['profile'] = [
                 'user_info' => $userInfo,
-                'numbers' => $numbers['items'] ?? $numbers,
-                'devices' => $devices['items'] ?? $devices,
-                'sms_extensions' => $smsExtensions['items'] ?? $smsExtensions,
+                'numbers' => $numberItems,
+                'devices' => $deviceItems,
+                'sms_extensions' => $smsItems,
                 'synced_at' => now()->toIso8601String(),
             ];
 
             $connection->credentials = $credentials;
             $connection->save();
 
+            // Sync to structured tables
+            $this->syncPhoneNumbersToTable($connection, $numberItems, $smsItems);
+            $this->syncDevicesToTable($connection, $deviceItems);
+
             Log::info('Sipgate syncProfile: OK', [
                 'connection_id' => $connection->id,
-                'numbers_count' => count($credentials['profile']['numbers']),
-                'devices_count' => count($credentials['profile']['devices']),
+                'numbers_count' => count($numberItems),
+                'devices_count' => count($deviceItems),
             ]);
         } catch (\Exception $e) {
             Log::warning('Sipgate syncProfile fehlgeschlagen', [
@@ -121,6 +131,98 @@ class SipgateConnectorService
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    protected function syncPhoneNumbersToTable(UserConnectorConnection $connection, array $numbers, array $smsExtensions): void
+    {
+        $smsCapableIds = collect($smsExtensions)->pluck('id')->filter()->all();
+        $syncedIds = [];
+
+        foreach ($numbers as $item) {
+            $number = $item['number'] ?? null;
+            $endpointId = $item['endpointId'] ?? null;
+            if (!$number) {
+                continue;
+            }
+
+            $capabilities = ['voice'];
+            if (in_array($endpointId, $smsCapableIds, true)) {
+                $capabilities[] = 'sms';
+            }
+            if (!empty($item['type']) && strtolower($item['type']) === 'fax') {
+                $capabilities = ['fax'];
+            }
+
+            $type = !empty($item['type']) ? strtolower($item['type']) : 'voice';
+
+            $record = UserConnectorPhoneNumber::updateOrCreate(
+                [
+                    'connection_id' => $connection->id,
+                    'number' => $number,
+                ],
+                [
+                    'label' => $item['localized'] ?? null,
+                    'type' => $type,
+                    'capabilities' => $capabilities,
+                    'external_id' => $endpointId,
+                    'meta' => array_filter([
+                        'endpointId' => $endpointId,
+                        'endpointAlias' => $item['endpointAlias'] ?? null,
+                        'endpointUrl' => $item['endpointUrl'] ?? null,
+                    ]),
+                ]
+            );
+
+            $syncedIds[] = $record->id;
+        }
+
+        // Remove numbers no longer returned by provider
+        UserConnectorPhoneNumber::where('connection_id', $connection->id)
+            ->whereNotIn('id', $syncedIds)
+            ->delete();
+    }
+
+    protected function syncDevicesToTable(UserConnectorConnection $connection, array $devices): void
+    {
+        $syncedIds = [];
+
+        foreach ($devices as $item) {
+            $deviceId = $item['id'] ?? null;
+            if (!$deviceId) {
+                continue;
+            }
+
+            $type = match (true) {
+                str_contains(strtolower($item['type'] ?? ''), 'register') => 'softphone',
+                str_contains(strtolower($item['type'] ?? ''), 'mobile') => 'mobile',
+                str_contains(strtolower($item['type'] ?? ''), 'external') => 'deskphone',
+                default => strtolower($item['type'] ?? 'softphone'),
+            };
+
+            $record = UserConnectorDevice::updateOrCreate(
+                [
+                    'connection_id' => $connection->id,
+                    'external_id' => $deviceId,
+                ],
+                [
+                    'name' => $item['alias'] ?? $item['type'] ?? $deviceId,
+                    'type' => $type,
+                    'is_online' => $item['online'] ?? null,
+                    'meta' => array_filter([
+                        'dpiName' => $item['dpiName'] ?? null,
+                        'activePhonelines' => $item['activePhonelines'] ?? null,
+                        'emergencyAddressId' => $item['emergencyAddressId'] ?? null,
+                    ]),
+                ]
+            );
+
+            $syncedIds[] = $record->id;
+        }
+
+        // Remove devices no longer returned by provider
+        UserConnectorDevice::where('connection_id', $connection->id)
+            ->whereNotIn('id', $syncedIds)
+            ->delete();
     }
 
     /**

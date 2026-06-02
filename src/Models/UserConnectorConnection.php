@@ -63,6 +63,16 @@ class UserConnectorConnection extends Model
         return $this->hasMany(UserConnectorConnectionShare::class, 'connection_id');
     }
 
+    public function phoneNumbers(): HasMany
+    {
+        return $this->hasMany(UserConnectorPhoneNumber::class, 'connection_id');
+    }
+
+    public function devices(): HasMany
+    {
+        return $this->hasMany(UserConnectorDevice::class, 'connection_id');
+    }
+
     /**
      * Make this the default connection for its connector + owner.
      */

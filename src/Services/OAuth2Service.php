@@ -282,6 +282,8 @@ class OAuth2Service
         try {
             match ($connectorKey) {
                 'sipgate' => app(\Platform\UserConnectors\Services\Sipgate\SipgateConnectorService::class)->syncProfile($connection),
+                'ringcentral' => app(\Platform\UserConnectors\Services\RingCentral\RingCentralConnectorService::class)->syncProfile($connection),
+                'vodafone' => app(\Platform\UserConnectors\Services\Vodafone\VodafoneConnectorService::class)->syncProfile($connection),
                 default => null,
             };
         } catch (\Throwable $e) {
