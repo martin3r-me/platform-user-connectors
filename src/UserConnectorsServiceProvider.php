@@ -156,6 +156,16 @@ class UserConnectorsServiceProvider extends ServiceProvider
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: Sipgate Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
         }
+
+        try {
+            $registry = resolve(\Platform\Core\Tools\ToolRegistry::class);
+
+            // Generic Phone Numbers & Devices Tools
+            $registry->register(new \Platform\UserConnectors\Tools\ListPhoneNumbersTool());
+            $registry->register(new \Platform\UserConnectors\Tools\ListDevicesTool());
+        } catch (\Throwable $e) {
+            \Log::warning('UserConnectors: Phone/Devices Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
+        }
     }
 
     protected function registerLivewireComponents(): void
