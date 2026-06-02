@@ -63,6 +63,15 @@ class Index extends Component
         $connectionIds = $connections->pluck('id')->toArray();
         $connectorKeys = $connections->pluck('connector.key')->unique()->filter()->toArray();
 
+        // Auto-expire stale ringing/active sessions (no hangup received)
+        UserConnectorCallSession::whereIn('status', ['ringing', 'active'])
+            ->where('started_at', '<', now()->subMinutes(2))
+            ->update([
+                'status' => 'missed',
+                'ended_at' => now(),
+                'hangup_cause' => 'noAnswer',
+            ]);
+
         // Call sessions (grouped call lifecycle)
         $callSessions = UserConnectorCallSession::query()
             ->where(function ($q) use ($connectionIds, $connectorKeys) {

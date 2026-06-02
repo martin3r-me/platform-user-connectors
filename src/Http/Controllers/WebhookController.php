@@ -47,10 +47,12 @@ class WebhookController extends Controller
 
         // Map Sipgate event types to our normalized types
         $sipgateEvent = $payload['event'] ?? '';
+        // Sipgate sends 'newCall' on initial push, but callback URLs
+        // receive 'answer'/'hangup' (without 'on' prefix).
         $eventType = match ($sipgateEvent) {
             'newCall' => 'call.new',
-            'onAnswer' => 'call.answered',
-            'onHangup' => 'call.hangup',
+            'onAnswer', 'answer' => 'call.answered',
+            'onHangup', 'hangup' => 'call.hangup',
             'dtmf' => 'call.dtmf',
             default => 'sipgate.' . $sipgateEvent,
         };
