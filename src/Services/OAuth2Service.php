@@ -211,6 +211,9 @@ class OAuth2Service
             ]);
         }
 
+        // Post-connect profile sync
+        $this->syncProfileAfterConnect($connection, $connectorKey);
+
         return $connection;
     }
 
@@ -269,6 +272,25 @@ class OAuth2Service
         $connection->save();
 
         return $connection;
+    }
+
+    /**
+     * Run connector-specific profile sync after OAuth connect/reconnect.
+     */
+    protected function syncProfileAfterConnect(UserConnectorConnection $connection, string $connectorKey): void
+    {
+        try {
+            match ($connectorKey) {
+                'sipgate' => app(\Platform\UserConnectors\Services\Sipgate\SipgateConnectorService::class)->syncProfile($connection),
+                default => null,
+            };
+        } catch (\Throwable $e) {
+            \Log::warning('UserConnectors: Post-connect profile sync fehlgeschlagen', [
+                'connector_key' => $connectorKey,
+                'connection_id' => $connection->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     public function newState(): string

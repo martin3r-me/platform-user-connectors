@@ -73,11 +73,13 @@ class WebhookController extends Controller
 
         if (!$event) {
             // Duplicate, acknowledge silently
-            return response('OK', 200);
+            return response('<?xml version="1.0" encoding="UTF-8"?><Response />', 200)
+                ->header('Content-Type', 'application/xml');
         }
 
-        // Sipgate expects 200 response, optionally XML for IVR
-        return response('OK', 200);
+        // Sipgate Push API requires XML response to continue sending follow-up events
+        return response('<?xml version="1.0" encoding="UTF-8"?><Response />', 200)
+            ->header('Content-Type', 'application/xml');
     }
 
     /**

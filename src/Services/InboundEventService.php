@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Log;
 use Platform\UserConnectors\Events\InboundCallEvent;
 use Platform\UserConnectors\Events\InboundEventReceived;
 use Platform\UserConnectors\Events\InboundMessageEvent;
+use Platform\UserConnectors\Models\UserConnectorCallSession;
 use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
 
@@ -73,9 +74,90 @@ class InboundEventService
         // Dispatch typed events
         $this->dispatchTypedEvent($event, $eventType);
 
+        // Correlate call events into sessions
+        if (str_starts_with($eventType, 'call.')) {
+            $this->updateCallSession($event);
+        }
+
         $event->markProcessed();
 
         return $event;
+    }
+
+    /**
+     * Correlate call webhook events into a single CallSession.
+     */
+    protected function updateCallSession(UserConnectorInboundEvent $event): void
+    {
+        if (!$event->external_id) {
+            return;
+        }
+
+        $session = UserConnectorCallSession::where('external_call_id', $event->external_id)->first();
+
+        $eventType = $event->event_type;
+        $payload = $event->payload ?? [];
+        $timestamp = $event->event_timestamp ?? $event->created_at;
+
+        if (!$session && $eventType === 'call.new') {
+            UserConnectorCallSession::create([
+                'connection_id' => $event->connection_id,
+                'connector_key' => $event->connector_key,
+                'external_call_id' => $event->external_id,
+                'direction' => $event->direction,
+                'status' => 'ringing',
+                'from_number' => $event->from_identifier,
+                'to_number' => $event->to_identifier,
+                'started_at' => $timestamp,
+            ]);
+            return;
+        }
+
+        if (!$session) {
+            // Late event without a session (e.g. missed the newCall) — create one retroactively
+            $session = UserConnectorCallSession::create([
+                'connection_id' => $event->connection_id,
+                'connector_key' => $event->connector_key,
+                'external_call_id' => $event->external_id,
+                'direction' => $event->direction,
+                'status' => 'ringing',
+                'from_number' => $event->from_identifier,
+                'to_number' => $event->to_identifier,
+                'started_at' => $timestamp,
+            ]);
+        }
+
+        if ($eventType === 'call.answered') {
+            $session->update([
+                'status' => 'active',
+                'answered_at' => $timestamp,
+                'answering_number' => $payload['answeringNumber'] ?? null,
+            ]);
+            return;
+        }
+
+        if ($eventType === 'call.hangup') {
+            $cause = $payload['cause'] ?? null;
+
+            $status = match (true) {
+                $session->answered_at !== null => 'completed',
+                $cause === 'busy' => 'busy',
+                $cause === 'cancel' => 'cancelled',
+                default => 'missed',
+            };
+
+            $duration = null;
+            if ($status === 'completed' && $session->answered_at) {
+                $duration = $session->answered_at->diffInSeconds($timestamp);
+            }
+
+            $session->update([
+                'status' => $status,
+                'ended_at' => $timestamp,
+                'duration_seconds' => $duration,
+                'hangup_cause' => $cause,
+            ]);
+        }
     }
 
     /**

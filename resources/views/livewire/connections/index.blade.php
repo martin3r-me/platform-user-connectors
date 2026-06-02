@@ -100,6 +100,23 @@
                                     @if ($connection->last_error)
                                         <p class="text-xs text-red-500 mt-1">{{ $connection->last_error }}</p>
                                     @endif
+                                    @php $profile = $connection->credentials['profile'] ?? null; @endphp
+                                    @if ($profile)
+                                        <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--ui-muted)]">
+                                            @if (!empty($profile['numbers']))
+                                                <span>Rufnummern: {{ collect($profile['numbers'])->pluck('number')->filter()->implode(', ') ?: count($profile['numbers']) . ' Nummern' }}</span>
+                                            @endif
+                                            @if (!empty($profile['devices']))
+                                                <span>Geräte: {{ count($profile['devices']) }}</span>
+                                            @endif
+                                            @if (!empty($profile['sms_extensions']))
+                                                <span>SMS: {{ count($profile['sms_extensions']) }}</span>
+                                            @endif
+                                            @if (!empty($profile['synced_at']))
+                                                <span>Sync: {{ \Carbon\Carbon::parse($profile['synced_at'])->diffForHumans() }}</span>
+                                            @endif
+                                        </div>
+                                    @endif
                                 </div>
                                 <div class="flex items-center gap-2">
                                     <x-ui-button variant="secondary-outline" size="sm" wire:click="testConnection({{ $connection->id }})">
@@ -141,6 +158,79 @@
                 </div>
             </x-ui-panel>
         @endif
+        {{-- Call Sessions --}}
+        <x-ui-panel title="Anrufe" subtitle="Gruppierte Anruf-Sessions deiner Verbindungen" wire:poll.5s>
+            @if ($callSessions->isEmpty())
+                <p class="text-sm text-[var(--ui-muted)]">Noch keine Anrufe erfasst.</p>
+            @else
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-[var(--ui-border)]/60">
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Zeit</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Connector</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Richtung</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Von</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">An</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Status</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Dauer</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-[var(--ui-border)]/40">
+                            @foreach ($callSessions as $session)
+                                <tr class="hover:bg-[var(--ui-bg)]">
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-muted)] whitespace-nowrap">
+                                        {{ $session->started_at?->format('d.m. H:i:s') ?? $session->created_at->format('d.m. H:i:s') }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        <x-ui-badge size="sm" variant="neutral">{{ $session->connector_key }}</x-ui-badge>
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @if ($session->direction === 'inbound')
+                                            <span class="text-green-600">&#8592; eingehend</span>
+                                        @elseif ($session->direction === 'outbound')
+                                            <span class="text-blue-600">&#8594; ausgehend</span>
+                                        @else
+                                            <span class="text-[var(--ui-muted)]">-</span>
+                                        @endif
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)]">{{ $session->from_number ?? '-' }}</td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)]">{{ $session->to_number ?? '-' }}</td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @switch($session->status)
+                                            @case('ringing')
+                                                <x-ui-badge size="sm" variant="warning" class="animate-pulse">Klingelt</x-ui-badge>
+                                                @break
+                                            @case('active')
+                                                <x-ui-badge size="sm" variant="success" class="animate-pulse">Aktiv</x-ui-badge>
+                                                @break
+                                            @case('completed')
+                                                <x-ui-badge size="sm" variant="success">Abgeschlossen</x-ui-badge>
+                                                @break
+                                            @case('missed')
+                                                <x-ui-badge size="sm" variant="danger">Verpasst</x-ui-badge>
+                                                @break
+                                            @case('busy')
+                                                <x-ui-badge size="sm" variant="warning">Besetzt</x-ui-badge>
+                                                @break
+                                            @case('cancelled')
+                                                <x-ui-badge size="sm" variant="neutral">Abgebrochen</x-ui-badge>
+                                                @break
+                                            @default
+                                                <x-ui-badge size="sm" variant="neutral">{{ $session->status }}</x-ui-badge>
+                                        @endswitch
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)]">
+                                        {{ $session->durationForHumans() ?? '-' }}
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            @endif
+        </x-ui-panel>
+
         {{-- Inbound Event Log --}}
         <x-ui-panel title="Event-Log" subtitle="Eingehende Webhook-Events deiner Verbindungen" wire:poll.5s>
             @if ($recentEvents->isEmpty())

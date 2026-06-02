@@ -2,6 +2,7 @@
 
 namespace Platform\UserConnectors\Services\Sipgate;
 
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Platform\Core\Models\User;
 use Platform\UserConnectors\Models\UserConnectorConnection;
@@ -71,6 +72,58 @@ class SipgateConnectorService
     }
 
     /**
+     * Fetch profile data (user info, numbers, devices) and store in credentials.profile.
+     */
+    public function syncProfile(UserConnectorConnection $connection): void
+    {
+        $token = $this->getValidAccessToken($connection);
+        if (!$token) {
+            Log::warning('Sipgate syncProfile: Kein gültiger Token', ['connection_id' => $connection->id]);
+            return;
+        }
+
+        $baseUrl = config('user-connectors.sipgate.api_base_url', 'https://api.sipgate.com/v2');
+
+        try {
+            $http = Http::withToken($token)->timeout(10)->withHeaders(['Accept' => 'application/json']);
+
+            $userInfo = $http->get($baseUrl . '/authorization/userinfo')->json() ?? [];
+            $numbers = $http->get($baseUrl . '/numbers')->json() ?? [];
+            $devices = $http->get($baseUrl . '/devices')->json() ?? [];
+            $smsExtensions = $http->get($baseUrl . '/sms')->json() ?? [];
+
+            $credentials = $connection->credentials ?? [];
+
+            // Store sipgate_sub for webhook resolution
+            if (!empty($userInfo['sub'])) {
+                $credentials['oauth']['sipgate_sub'] = $userInfo['sub'];
+            }
+
+            $credentials['profile'] = [
+                'user_info' => $userInfo,
+                'numbers' => $numbers['items'] ?? $numbers,
+                'devices' => $devices['items'] ?? $devices,
+                'sms_extensions' => $smsExtensions['items'] ?? $smsExtensions,
+                'synced_at' => now()->toIso8601String(),
+            ];
+
+            $connection->credentials = $credentials;
+            $connection->save();
+
+            Log::info('Sipgate syncProfile: OK', [
+                'connection_id' => $connection->id,
+                'numbers_count' => count($credentials['profile']['numbers']),
+                'devices_count' => count($credentials['profile']['devices']),
+            ]);
+        } catch (\Exception $e) {
+            Log::warning('Sipgate syncProfile fehlgeschlagen', [
+                'connection_id' => $connection->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
      * @return array{success: bool, message: string}
      */
     public function testConnection(UserConnectorConnection $connection): array
@@ -102,6 +155,9 @@ class SipgateConnectorService
                 $connection->save();
 
                 $displayName = $data['sub'] ?? $data['locale'] ?? 'OK';
+
+                // Sync profile data on successful test
+                $this->syncProfile($connection);
 
                 return ['success' => true, 'message' => "Verbindung erfolgreich. Account: {$displayName}"];
             }

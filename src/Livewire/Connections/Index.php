@@ -6,6 +6,7 @@ use Livewire\Component;
 use Platform\Core\Models\User;
 use Platform\UserConnectors\Models\UserConnector;
 use Platform\UserConnectors\Models\UserConnectorConnection;
+use Platform\UserConnectors\Models\UserConnectorCallSession;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
 use Platform\UserConnectors\Models\UserConnectorOAuthApp;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365ConnectorService;
@@ -59,9 +60,24 @@ class Index extends Component
             })
             ->get();
 
-        // Inbound events for user's connections (+ unmatched events by connector key)
         $connectionIds = $connections->pluck('id')->toArray();
         $connectorKeys = $connections->pluck('connector.key')->unique()->filter()->toArray();
+
+        // Call sessions (grouped call lifecycle)
+        $callSessions = UserConnectorCallSession::query()
+            ->where(function ($q) use ($connectionIds, $connectorKeys) {
+                $q->whereIn('connection_id', $connectionIds);
+                if (!empty($connectorKeys)) {
+                    $q->orWhere(function ($q2) use ($connectorKeys) {
+                        $q2->whereNull('connection_id')
+                            ->whereIn('connector_key', $connectorKeys);
+                    });
+                }
+            })
+            ->recent(30)
+            ->get();
+
+        // Inbound events for user's connections (+ unmatched events by connector key)
         $recentEvents = UserConnectorInboundEvent::query()
             ->where(function ($q) use ($connectionIds, $connectorKeys) {
                 $q->whereIn('connection_id', $connectionIds);
@@ -80,6 +96,7 @@ class Index extends Component
             'connectors' => $connectors,
             'connections' => $connections,
             'sharedWithMe' => $sharedWithMe,
+            'callSessions' => $callSessions,
             'recentEvents' => $recentEvents,
         ])->layout('platform::layouts.app');
     }
