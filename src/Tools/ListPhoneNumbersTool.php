@@ -88,7 +88,6 @@ class ListPhoneNumbersTool implements ToolContract, ToolMetadataContract
                 'is_default' => $phone->is_default,
                 'external_id' => $phone->external_id,
                 'phoneline' => $phone->meta['phonelineAlias'] ?? null,
-                'assigned' => $phone->meta['assigned'] ?? null,
             ], fn ($v) => $v !== null))->all();
 
             return ToolResult::success([

@@ -158,6 +158,12 @@ class SipgateConnectorService
                 continue;
             }
 
+            // Skip numbers not assigned to any of the user's phonelines
+            $isAssigned = !empty($endpointId) && in_array($endpointId, $userPhonelineIds, true);
+            if (!$isAssigned) {
+                continue;
+            }
+
             $capabilities = ['voice'];
             if (in_array($endpointId, $smsCapableIds, true)) {
                 $capabilities[] = 'sms';
@@ -168,11 +174,7 @@ class SipgateConnectorService
 
             $type = !empty($item['type']) ? strtolower($item['type']) : 'voice';
 
-            // Phoneline context
             $phonelineAlias = $phonelineMap[$endpointId] ?? null;
-            $isAssigned = !empty($endpointId) && in_array($endpointId, $userPhonelineIds, true);
-
-            // Label: "Geschäft · 02173-9939668" or just localized if unassigned
             $localized = $item['localized'] ?? null;
             $label = $phonelineAlias
                 ? $phonelineAlias . ($localized ? ' · ' . $localized : '')
@@ -189,10 +191,8 @@ class SipgateConnectorService
                     'capabilities' => $capabilities,
                     'external_id' => $endpointId ?: null,
                     'meta' => array_filter([
-                        'endpointId' => $endpointId ?: null,
-                        'endpointAlias' => $item['endpointAlias'] ?? null,
+                        'endpointId' => $endpointId,
                         'phonelineAlias' => $phonelineAlias,
-                        'assigned' => $isAssigned,
                         'localized' => $localized,
                     ]),
                 ]

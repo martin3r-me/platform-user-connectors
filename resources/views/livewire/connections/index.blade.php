@@ -100,56 +100,66 @@
                                     @if ($connection->last_error)
                                         <p class="text-xs text-red-500 mt-1">{{ $connection->last_error }}</p>
                                     @endif
-                                    {{-- Phone Numbers --}}
-                                    @if ($connection->phoneNumbers->isNotEmpty())
-                                        <div class="mt-2 flex flex-wrap gap-1">
-                                            @foreach ($connection->phoneNumbers as $phone)
-                                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
-                                                    {{ $phone->number }}
-                                                    @if ($phone->label)
-                                                        <span class="text-[var(--ui-muted)]">({{ $phone->label }})</span>
-                                                    @endif
-                                                    @if ($phone->capabilities)
-                                                        @foreach ($phone->capabilities as $cap)
-                                                            @switch($cap)
-                                                                @case('voice')
-                                                                    @svg('heroicon-o-phone', 'w-3 h-3 text-green-500')
-                                                                    @break
-                                                                @case('sms')
+                                    {{-- Phonelines with Numbers & Devices --}}
+                                    @if ($connection->phoneNumbers->isNotEmpty() || $connection->devices->isNotEmpty())
+                                        @php
+                                            $phonelines = $connection->phoneNumbers->groupBy(fn ($p) => $p->external_id ?? '_none');
+                                            $devicesByPhoneline = $connection->devices->groupBy(fn ($d) => collect($d->meta['activePhonelines'] ?? [])->pluck('id')->first() ?? '_none');
+                                        @endphp
+                                        <div class="mt-2 space-y-1.5">
+                                            @foreach ($phonelines as $plId => $numbers)
+                                                @php $plAlias = $numbers->first()->meta['phonelineAlias'] ?? $plId; @endphp
+                                                <div class="flex flex-wrap items-center gap-1">
+                                                    <span class="text-xs font-medium text-[var(--ui-secondary)]">@svg('heroicon-o-phone', 'w-3.5 h-3.5 inline') {{ $plAlias }}:</span>
+                                                    @foreach ($numbers as $phone)
+                                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+                                                            {{ $phone->number }}
+                                                            @foreach ($phone->capabilities ?? [] as $cap)
+                                                                @if ($cap === 'sms')
                                                                     @svg('heroicon-o-chat-bubble-left', 'w-3 h-3 text-blue-500')
-                                                                    @break
-                                                                @case('fax')
+                                                                @elseif ($cap === 'fax')
                                                                     @svg('heroicon-o-printer', 'w-3 h-3 text-orange-500')
-                                                                    @break
-                                                            @endswitch
-                                                        @endforeach
-                                                    @endif
-                                                    @if ($phone->is_default)
-                                                        @svg('heroicon-o-star', 'w-3 h-3 text-yellow-500')
-                                                    @endif
-                                                </span>
+                                                                @endif
+                                                            @endforeach
+                                                            @if ($phone->is_default)
+                                                                @svg('heroicon-o-star', 'w-3 h-3 text-yellow-500')
+                                                            @endif
+                                                        </span>
+                                                    @endforeach
+                                                    {{-- Devices on this phoneline --}}
+                                                    @foreach ($devicesByPhoneline->get($plId, collect()) as $device)
+                                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-50 text-gray-600 border border-gray-200">
+                                                            @if ($device->is_online === true)
+                                                                <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                                                            @elseif ($device->is_online === false)
+                                                                <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                                                            @else
+                                                                <span class="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
+                                                            @endif
+                                                            {{ $device->name }}
+                                                        </span>
+                                                    @endforeach
+                                                </div>
+                                            @endforeach
+                                            {{-- Devices not assigned to any phoneline --}}
+                                            @foreach ($devicesByPhoneline->get('_none', collect()) as $device)
+                                                <div class="flex items-center gap-1">
+                                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-50 text-gray-600 border border-gray-200">
+                                                        @if ($device->is_online === true)
+                                                            <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                                                        @elseif ($device->is_online === false)
+                                                            <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                                                        @else
+                                                            <span class="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
+                                                        @endif
+                                                        {{ $device->name }}
+                                                        <span class="text-[var(--ui-muted)]">({{ $device->type }})</span>
+                                                    </span>
+                                                </div>
                                             @endforeach
                                         </div>
                                     @endif
-                                    {{-- Devices --}}
-                                    @if ($connection->devices->isNotEmpty())
-                                        <div class="mt-1 flex flex-wrap gap-1">
-                                            @foreach ($connection->devices as $device)
-                                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-50 text-gray-600 border border-gray-200">
-                                                    @if ($device->is_online === true)
-                                                        <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-                                                    @elseif ($device->is_online === false)
-                                                        <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
-                                                    @else
-                                                        <span class="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
-                                                    @endif
-                                                    {{ $device->name }}
-                                                    <span class="text-[var(--ui-muted)]">({{ $device->type }})</span>
-                                                </span>
-                                            @endforeach
-                                        </div>
-                                    @endif
-                                    {{-- Sync timestamp from profile blob --}}
+                                    {{-- Sync timestamp --}}
                                     @php $syncedAt = $connection->credentials['profile']['synced_at'] ?? null; @endphp
                                     @if ($syncedAt)
                                         <p class="mt-1 text-xs text-[var(--ui-muted)]">
