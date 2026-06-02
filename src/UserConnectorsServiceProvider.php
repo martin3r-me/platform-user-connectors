@@ -163,6 +163,7 @@ class UserConnectorsServiceProvider extends ServiceProvider
             // Generic Phone Numbers & Devices Tools
             $registry->register(new \Platform\UserConnectors\Tools\ListPhoneNumbersTool());
             $registry->register(new \Platform\UserConnectors\Tools\ListDevicesTool());
+            $registry->register(new \Platform\UserConnectors\Tools\SyncProfileTool());
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: Phone/Devices Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
         }
