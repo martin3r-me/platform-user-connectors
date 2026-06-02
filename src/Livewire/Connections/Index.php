@@ -6,6 +6,7 @@ use Livewire\Component;
 use Platform\Core\Models\User;
 use Platform\UserConnectors\Models\UserConnector;
 use Platform\UserConnectors\Models\UserConnectorConnection;
+use Platform\UserConnectors\Models\UserConnectorInboundEvent;
 use Platform\UserConnectors\Models\UserConnectorOAuthApp;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365ConnectorService;
 use Platform\UserConnectors\Services\RingCentral\RingCentralConnectorService;
@@ -58,10 +59,19 @@ class Index extends Component
             })
             ->get();
 
+        // Inbound events for user's connections
+        $connectionIds = $connections->pluck('id')->toArray();
+        $recentEvents = UserConnectorInboundEvent::query()
+            ->whereIn('connection_id', $connectionIds)
+            ->orderByDesc('created_at')
+            ->limit(50)
+            ->get();
+
         return view('user-connectors::livewire.connections.index', [
             'connectors' => $connectors,
             'connections' => $connections,
             'sharedWithMe' => $sharedWithMe,
+            'recentEvents' => $recentEvents,
         ])->layout('platform::layouts.app');
     }
 

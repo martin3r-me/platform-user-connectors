@@ -141,6 +141,64 @@
                 </div>
             </x-ui-panel>
         @endif
+        {{-- Inbound Event Log --}}
+        <x-ui-panel title="Event-Log" subtitle="Eingehende Webhook-Events deiner Verbindungen" wire:poll.5s>
+            @if ($recentEvents->isEmpty())
+                <p class="text-sm text-[var(--ui-muted)]">Noch keine Events empfangen. Teste z.B. einen eingehenden Anruf.</p>
+            @else
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-[var(--ui-border)]/60">
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Zeit</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Connector</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Event</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Richtung</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Von</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">An</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-[var(--ui-border)]/40">
+                            @foreach ($recentEvents as $event)
+                                <tr class="hover:bg-[var(--ui-bg)]">
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-muted)] whitespace-nowrap">
+                                        {{ $event->created_at->format('d.m. H:i:s') }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        <x-ui-badge size="sm" variant="neutral">{{ $event->connector_key }}</x-ui-badge>
+                                    </td>
+                                    <td class="py-2 px-2 text-xs font-medium text-[var(--ui-secondary)]">
+                                        {{ $event->event_type }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @if ($event->direction === 'inbound')
+                                            <span class="text-green-600">&#8592; eingehend</span>
+                                        @elseif ($event->direction === 'outbound')
+                                            <span class="text-blue-600">&#8594; ausgehend</span>
+                                        @else
+                                            <span class="text-[var(--ui-muted)]">-</span>
+                                        @endif
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)]">{{ $event->from_identifier ?? '-' }}</td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)]">{{ $event->to_identifier ?? '-' }}</td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @if ($event->processing_status === 'processed')
+                                            <x-ui-badge size="sm" variant="success">OK</x-ui-badge>
+                                        @elseif ($event->processing_status === 'failed')
+                                            <x-ui-badge size="sm" variant="danger">Fehler</x-ui-badge>
+                                        @else
+                                            <x-ui-badge size="sm" variant="warning">{{ $event->processing_status }}</x-ui-badge>
+                                        @endif
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            @endif
+        </x-ui-panel>
+
     </x-ui-page-container>
 
     {{-- App Selection Modal (when connector has multiple OAuth apps) --}}
