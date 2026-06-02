@@ -9,6 +9,7 @@ use Platform\Core\Contracts\ToolResult;
 use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorPhoneNumber;
 use Platform\UserConnectors\Models\UserConnectorDevice;
+use Illuminate\Support\Facades\Http;
 use Platform\UserConnectors\Services\ConnectionResolver;
 use Platform\UserConnectors\Services\Sipgate\SipgateConnectorService;
 use Platform\UserConnectors\Services\RingCentral\RingCentralConnectorService;
@@ -93,6 +94,25 @@ class SyncProfileTool implements ToolContract, ToolMetadataContract
             ];
 
             if (!empty($arguments['diagnose_only'])) {
+                // Raw API probe for Sipgate
+                if ($connectorKey === 'sipgate') {
+                    $token = $credentials['oauth']['access_token'] ?? null;
+                    if ($token) {
+                        $baseUrl = config('user-connectors.sipgate.api_base_url', 'https://api.sipgate.com/v2');
+                        $http = Http::withToken($token)->timeout(10)->withHeaders(['Accept' => 'application/json']);
+
+                        $numbersResp = $http->get($baseUrl . '/numbers');
+                        $devicesResp = $http->get($baseUrl . '/devices');
+                        $smsResp = $http->get($baseUrl . '/sms');
+
+                        $diagnose['raw_api'] = [
+                            'numbers' => ['status' => $numbersResp->status(), 'body' => $numbersResp->json()],
+                            'devices' => ['status' => $devicesResp->status(), 'body' => $devicesResp->json()],
+                            'sms' => ['status' => $smsResp->status(), 'body' => $smsResp->json()],
+                        ];
+                    }
+                }
+
                 return ToolResult::success($diagnose);
             }
 
