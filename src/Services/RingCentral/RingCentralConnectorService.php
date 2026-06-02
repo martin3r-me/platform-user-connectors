@@ -10,13 +10,20 @@ use Platform\UserConnectors\Services\OAuth2Service;
 
 class RingCentralConnectorService
 {
+    protected string $connectorKey = 'ringcentral';
+
     public function __construct(
         protected ConnectionResolver $resolver,
     ) {}
 
+    public function getConnectorKey(): string
+    {
+        return $this->connectorKey;
+    }
+
     public function getConnectionForUser(User $user): ?UserConnectorConnection
     {
-        return $this->resolver->resolveForUser('ringcentral', $user);
+        return $this->resolver->resolveForUser($this->connectorKey, $user);
     }
 
     public function getAccessToken(UserConnectorConnection $connection): ?string
@@ -81,7 +88,7 @@ class RingCentralConnectorService
         }
 
         try {
-            $baseUrl = config('user-connectors.ringcentral.api_base_url', 'https://platform.ringcentral.com/restapi/v1.0');
+            $baseUrl = config("user-connectors.{$this->connectorKey}.api_base_url", 'https://platform.ringcentral.com/restapi/v1.0');
             $response = \Illuminate\Support\Facades\Http::withToken($token)
                 ->timeout(10)
                 ->get($baseUrl . '/account/~');

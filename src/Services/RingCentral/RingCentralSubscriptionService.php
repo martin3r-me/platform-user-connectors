@@ -15,7 +15,7 @@ class RingCentralSubscriptionService implements SubscribableConnector
 
     public function getConnectorKey(): string
     {
-        return 'ringcentral';
+        return $this->connectorService->getConnectorKey();
     }
 
     public function getSubscriptionResources(UserConnectorConnection $connection): array
@@ -25,7 +25,7 @@ class RingCentralSubscriptionService implements SubscribableConnector
 
     public function getMaxSubscriptionLifetime(): int
     {
-        return config('user-connectors.ringcentral.subscriptions.max_lifetime_seconds', 86400);
+        return config('user-connectors.' . $this->connectorService->getConnectorKey() . '.subscriptions.max_lifetime_seconds', 86400);
     }
 
     public function createSubscriptions(UserConnectorConnection $connection, array $resources): array
@@ -35,8 +35,8 @@ class RingCentralSubscriptionService implements SubscribableConnector
             throw new \RuntimeException('RingCentral: Kein gültiger Access-Token für Subscription-Erstellung.');
         }
 
-        $baseUrl = config('user-connectors.ringcentral.api_base_url', 'https://platform.ringcentral.com/restapi/v1.0');
-        $webhookUrl = route('user-connectors.webhooks.ringcentral');
+        $baseUrl = config('user-connectors.' . $this->connectorService->getConnectorKey() . '.api_base_url', 'https://platform.ringcentral.com/restapi/v1.0');
+        $webhookUrl = route('user-connectors.webhooks.' . $this->getConnectorKey());
         $expiresIn = $this->getMaxSubscriptionLifetime();
 
         // RingCentral uses a single subscription with multiple eventFilters
@@ -87,7 +87,7 @@ class RingCentralSubscriptionService implements SubscribableConnector
             throw new \RuntimeException('RingCentral: Kein gültiger Access-Token für Subscription-Erneuerung.');
         }
 
-        $baseUrl = config('user-connectors.ringcentral.api_base_url', 'https://platform.ringcentral.com/restapi/v1.0');
+        $baseUrl = config('user-connectors.' . $this->connectorService->getConnectorKey() . '.api_base_url', 'https://platform.ringcentral.com/restapi/v1.0');
         $expiresIn = $this->getMaxSubscriptionLifetime();
 
         $existingSubscriptions = $connection->credentials['subscriptions'] ?? [];
@@ -141,7 +141,7 @@ class RingCentralSubscriptionService implements SubscribableConnector
             return;
         }
 
-        $baseUrl = config('user-connectors.ringcentral.api_base_url', 'https://platform.ringcentral.com/restapi/v1.0');
+        $baseUrl = config('user-connectors.' . $this->connectorService->getConnectorKey() . '.api_base_url', 'https://platform.ringcentral.com/restapi/v1.0');
         $existingSubscriptions = $connection->credentials['subscriptions'] ?? [];
 
         foreach ($existingSubscriptions as $sub) {

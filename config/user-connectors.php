@@ -32,6 +32,12 @@ return [
             'scopes' => [],
             'extra_params' => [],
         ],
+        'vodafone' => [
+            'authorize_url' => 'https://platform.ringcentral.biz/restapi/oauth/authorize',
+            'token_url' => 'https://platform.ringcentral.biz/restapi/oauth/token',
+            'scopes' => [],
+            'extra_params' => [],
+        ],
         'sipgate' => [
             'authorize_url' => 'https://login.sipgate.com/auth/realms/third-party/protocol/openid-connect/auth',
             'token_url' => 'https://login.sipgate.com/auth/realms/third-party/protocol/openid-connect/token',
@@ -80,6 +86,19 @@ return [
         'subscriptions' => [
             'enabled' => true,
             'max_lifetime_seconds' => 86400, // 24 hours
+            'event_filters' => [
+                '/restapi/v1.0/account/~/extension/~/telephony/sessions',
+                '/restapi/v1.0/account/~/extension/~/message-store',
+            ],
+        ],
+    ],
+
+    'vodafone' => [
+        'api_base_url' => env('UC_VODAFONE_API_BASE_URL', 'https://platform.ringcentral.biz/restapi/v1.0'),
+        'timeout' => ['default' => 30, 'connect' => 10],
+        'subscriptions' => [
+            'enabled' => true,
+            'max_lifetime_seconds' => 86400,
             'event_filters' => [
                 '/restapi/v1.0/account/~/extension/~/telephony/sessions',
                 '/restapi/v1.0/account/~/extension/~/message-store',

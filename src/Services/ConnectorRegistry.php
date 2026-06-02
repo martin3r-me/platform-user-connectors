@@ -10,6 +10,8 @@ use Platform\UserConnectors\Services\RingCentral\RingCentralCallConnector;
 use Platform\UserConnectors\Services\RingCentral\RingCentralMessageConnector;
 use Platform\UserConnectors\Services\Sipgate\SipgateCallConnector;
 use Platform\UserConnectors\Services\Sipgate\SipgateMessageConnector;
+use Platform\UserConnectors\Services\Vodafone\VodafoneCallConnector;
+use Platform\UserConnectors\Services\Vodafone\VodafoneMessageConnector;
 
 class ConnectorRegistry
 {
@@ -25,6 +27,10 @@ class ConnectorRegistry
         'ringcentral' => [
             'calls' => RingCentralCallConnector::class,
             'messages' => RingCentralMessageConnector::class,
+        ],
+        'vodafone' => [
+            'calls' => VodafoneCallConnector::class,
+            'messages' => VodafoneMessageConnector::class,
         ],
         'sipgate' => [
             'calls' => SipgateCallConnector::class,

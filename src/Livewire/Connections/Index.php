@@ -10,6 +10,7 @@ use Platform\UserConnectors\Models\UserConnectorOAuthApp;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365ConnectorService;
 use Platform\UserConnectors\Services\RingCentral\RingCentralConnectorService;
 use Platform\UserConnectors\Services\Sipgate\SipgateConnectorService;
+use Platform\UserConnectors\Services\Vodafone\VodafoneConnectorService;
 use Platform\UserConnectors\Services\WebhookSubscriptionManager;
 
 class Index extends Component
@@ -175,6 +176,7 @@ class Index extends Component
             $result = match ($key) {
                 'microsoft365' => app(Microsoft365ConnectorService::class)->testConnection($connection),
                 'ringcentral' => app(RingCentralConnectorService::class)->testConnection($connection),
+                'vodafone' => app(VodafoneConnectorService::class)->testConnection($connection),
                 'sipgate' => app(SipgateConnectorService::class)->testConnection($connection),
                 default => ['success' => false, 'message' => "Test für '{$key}' nicht implementiert."],
             };

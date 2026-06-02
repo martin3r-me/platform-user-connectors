@@ -64,9 +64,10 @@ class RingCentralApiService
             throw RingCentralApiException::connectionError('Kein gültiger Token.');
         }
 
-        $baseUrl = config('user-connectors.ringcentral.api_base_url', 'https://platform.ringcentral.com/restapi/v1.0');
+        $configKey = $this->connectorService->getConnectorKey();
+        $baseUrl = config("user-connectors.{$configKey}.api_base_url", 'https://platform.ringcentral.com/restapi/v1.0');
         $response = Http::withToken($token)
-            ->timeout(config('user-connectors.ringcentral.timeout.default', 30))
+            ->timeout(config("user-connectors.{$configKey}.timeout.default", 30))
             ->delete($baseUrl . $path);
 
         return $response->status() === 204 || $response->successful();
@@ -81,10 +82,11 @@ class RingCentralApiService
             throw RingCentralApiException::connectionError('Kein gültiger Token.');
         }
 
-        $baseUrl = config('user-connectors.ringcentral.api_base_url', 'https://platform.ringcentral.com/restapi/v1.0');
+        $configKey = $this->connectorService->getConnectorKey();
+        $baseUrl = config("user-connectors.{$configKey}.api_base_url", 'https://platform.ringcentral.com/restapi/v1.0');
         $url = $baseUrl . $path;
-        $timeout = config('user-connectors.ringcentral.timeout.default', 30);
-        $connectTimeout = config('user-connectors.ringcentral.timeout.connect', 10);
+        $timeout = config("user-connectors.{$configKey}.timeout.default", 30);
+        $connectTimeout = config("user-connectors.{$configKey}.timeout.connect", 10);
 
         try {
             $http = Http::withToken($token)

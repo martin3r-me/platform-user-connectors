@@ -13,6 +13,7 @@ use Platform\Core\Routing\ModuleRouter;
 use Platform\UserConnectors\Console\Commands\RenewWebhookSubscriptions;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365SubscriptionService;
 use Platform\UserConnectors\Services\RingCentral\RingCentralSubscriptionService;
+use Platform\UserConnectors\Services\Vodafone\VodafoneSubscriptionService;
 use Platform\UserConnectors\Services\WebhookSubscriptionManager;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
@@ -27,6 +28,7 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $manager = new WebhookSubscriptionManager();
             $manager->registerConnector($app->make(Microsoft365SubscriptionService::class));
             $manager->registerConnector($app->make(RingCentralSubscriptionService::class));
+            $manager->registerConnector($app->make(VodafoneSubscriptionService::class));
 
             return $manager;
         });
@@ -74,6 +76,9 @@ class UserConnectorsServiceProvider extends ServiceProvider
                     ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
                 Route::post('/ringcentral', [\Platform\UserConnectors\Http\Controllers\WebhookController::class, 'ringcentral'])
                     ->name('user-connectors.webhooks.ringcentral')
+                    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
+                Route::post('/vodafone', [\Platform\UserConnectors\Http\Controllers\WebhookController::class, 'ringcentral'])
+                    ->name('user-connectors.webhooks.vodafone')
                     ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
             });
 
