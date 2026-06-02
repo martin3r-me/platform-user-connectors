@@ -83,8 +83,17 @@ class InboundEventService
      */
     public function resolveConnectionFromSipgate(array $payload): ?UserConnectorConnection
     {
+        // Sipgate sends userId[] and fullUserId[] as arrays
         $userId = $payload['userId'] ?? $payload['fullUserId'] ?? null;
-        if (!$userId) {
+        if (is_array($userId)) {
+            $userId = $userId[0] ?? null;
+        }
+        $fullUserId = $payload['fullUserId'] ?? null;
+        if (is_array($fullUserId)) {
+            $fullUserId = $fullUserId[0] ?? null;
+        }
+
+        if (!$userId && !$fullUserId) {
             return null;
         }
 
@@ -93,9 +102,12 @@ class InboundEventService
             ->whereHas('connector', fn ($q) => $q->where('key', 'sipgate'))
             ->where('status', 'active')
             ->get()
-            ->first(function (UserConnectorConnection $conn) use ($userId) {
+            ->first(function (UserConnectorConnection $conn) use ($userId, $fullUserId) {
                 $sub = $conn->credentials['oauth']['sipgate_sub'] ?? null;
-                return $sub && $sub === $userId;
+                if (!$sub) {
+                    return false;
+                }
+                return $sub === $userId || $sub === $fullUserId;
             });
     }
 

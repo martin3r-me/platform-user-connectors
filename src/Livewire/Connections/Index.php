@@ -59,10 +59,19 @@ class Index extends Component
             })
             ->get();
 
-        // Inbound events for user's connections
+        // Inbound events for user's connections (+ unmatched events by connector key)
         $connectionIds = $connections->pluck('id')->toArray();
+        $connectorKeys = $connections->pluck('connector.key')->unique()->filter()->toArray();
         $recentEvents = UserConnectorInboundEvent::query()
-            ->whereIn('connection_id', $connectionIds)
+            ->where(function ($q) use ($connectionIds, $connectorKeys) {
+                $q->whereIn('connection_id', $connectionIds);
+                if (!empty($connectorKeys)) {
+                    $q->orWhere(function ($q2) use ($connectorKeys) {
+                        $q2->whereNull('connection_id')
+                            ->whereIn('connector_key', $connectorKeys);
+                    });
+                }
+            })
             ->orderByDesc('created_at')
             ->limit(50)
             ->get();
