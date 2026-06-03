@@ -80,6 +80,9 @@ class UserConnectorsServiceProvider extends ServiceProvider
                 Route::post('/vodafone', [\Platform\UserConnectors\Http\Controllers\WebhookController::class, 'ringcentral'])
                     ->name('user-connectors.webhooks.vodafone')
                     ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
+                Route::post('/microsoft365/call-records', [\Platform\UserConnectors\Http\Controllers\WebhookController::class, 'microsoft365CallRecords'])
+                    ->name('user-connectors.webhooks.microsoft365.call-records')
+                    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
             });
 
         // Module routes via ModuleRouter (when module is active)

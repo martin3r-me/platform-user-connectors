@@ -77,7 +77,11 @@ return [
             'resources' => [
                 ['resource' => 'me/mailFolders/inbox/messages', 'changeType' => 'created,updated'],
                 ['resource' => 'me/events', 'changeType' => 'created,updated,deleted'],
+                ['resource' => 'me/chats/getAllMessages', 'changeType' => 'created'],
             ],
+        ],
+        'call_records' => [
+            'enabled' => false, // Requires tenant_id in OAuthApp settings + CallRecords.Read.All (Application Permission)
         ],
     ],
 

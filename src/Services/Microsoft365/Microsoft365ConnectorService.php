@@ -94,6 +94,17 @@ class Microsoft365ConnectorService
             if ($response->successful()) {
                 $data = $response->json();
 
+                // Store Azure AD objectId for call record participant matching
+                $credentials = $connection->credentials;
+                $credentials['ms365_user_id'] = $data['id'] ?? null;
+                $credentials['profile'] = [
+                    'displayName' => $data['displayName'] ?? null,
+                    'mail' => $data['mail'] ?? $data['userPrincipalName'] ?? null,
+                    'userPrincipalName' => $data['userPrincipalName'] ?? null,
+                    'synced_at' => now()->toIso8601String(),
+                ];
+                $connection->credentials = $credentials;
+
                 $connection->status = 'active';
                 $connection->last_error = null;
                 $connection->last_tested_at = now();

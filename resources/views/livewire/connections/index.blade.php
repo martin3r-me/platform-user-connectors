@@ -292,6 +292,7 @@
                                 <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Zeit</th>
                                 <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Connector</th>
                                 <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Event</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Kontext</th>
                                 <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Richtung</th>
                                 <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Von</th>
                                 <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">An</th>
@@ -309,6 +310,26 @@
                                     </td>
                                     <td class="py-2 px-2 text-xs font-medium text-[var(--ui-secondary)]">
                                         {{ $event->event_type }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-muted)] max-w-[200px] truncate" title="{{ $event->meta['subject'] ?? $event->meta['bodyPreview'] ?? '' }}">
+                                        @php
+                                            $meta = $event->meta ?? [];
+                                            $context = null;
+                                            if (str_starts_with($event->event_type, 'mail.')) {
+                                                $context = \Illuminate\Support\Str::limit($meta['subject'] ?? '', 60);
+                                            } elseif (str_starts_with($event->event_type, 'calendar.')) {
+                                                $context = \Illuminate\Support\Str::limit($meta['subject'] ?? '', 40);
+                                                if (!empty($meta['start'])) {
+                                                    $context .= ' · ' . \Carbon\Carbon::parse($meta['start'])->format('d.m. H:i');
+                                                    if (!empty($meta['end'])) {
+                                                        $context .= '–' . \Carbon\Carbon::parse($meta['end'])->format('H:i');
+                                                    }
+                                                }
+                                            } elseif (str_starts_with($event->event_type, 'teams.')) {
+                                                $context = \Illuminate\Support\Str::limit($meta['bodyPreview'] ?? '', 60);
+                                            }
+                                        @endphp
+                                        {{ $context ?? '-' }}
                                     </td>
                                     <td class="py-2 px-2 text-xs">
                                         @if ($event->direction === 'inbound')

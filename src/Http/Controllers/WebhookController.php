@@ -2,10 +2,17 @@
 
 namespace Platform\UserConnectors\Http\Controllers;
 
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Platform\UserConnectors\Jobs\EnrichMicrosoft365EventJob;
+use Platform\UserConnectors\Models\UserConnectorCallSession;
+use Platform\UserConnectors\Models\UserConnectorConnection;
+use Platform\UserConnectors\Models\UserConnectorOAuthApp;
 use Platform\UserConnectors\Services\InboundEventService;
+use Platform\UserConnectors\Services\Microsoft365\Microsoft365AppTokenService;
 
 class WebhookController extends Controller
 {
@@ -138,13 +145,18 @@ class WebhookController extends Controller
 
             $idempotencyKey = hash('sha256', "{$subscriptionId}:{$resource}:{$changeType}:" . json_encode($notification));
 
-            $this->inboundService->ingest(
+            $event = $this->inboundService->ingest(
                 connectorKey: 'microsoft365',
                 eventType: $eventType,
                 payload: $notification,
                 idempotencyKey: $idempotencyKey,
                 connectionId: $connection?->id,
             );
+
+            // Dispatch enrichment job to fetch actual content from Graph API
+            if ($event && $connection) {
+                EnrichMicrosoft365EventJob::dispatch($event->id);
+            }
         }
 
         return response('', 202);
@@ -275,6 +287,226 @@ class WebhookController extends Controller
                 connectionId: $connectionId,
             );
         }
+    }
+
+    /**
+     * Microsoft 365 Call Records Webhook Endpoint.
+     *
+     * Receives change notifications for /communications/callRecords (app-level subscription).
+     * Fetches full call record, matches participants to connections, creates CallSessions.
+     */
+    public function microsoft365CallRecords(Request $request)
+    {
+        // Subscription validation
+        $validationToken = $request->query('validationToken');
+        if ($validationToken) {
+            Log::info('UserConnectors MS365 CallRecords Webhook: Subscription validation');
+            return response($validationToken, 200)
+                ->header('Content-Type', 'text/plain');
+        }
+
+        $notifications = $request->input('value', []);
+
+        Log::info('UserConnectors MS365 CallRecords Webhook received', [
+            'count' => count($notifications),
+        ]);
+
+        foreach ($notifications as $notification) {
+            $resourcePath = $notification['resource'] ?? '';
+            $callRecordId = $notification['resourceData']['id']
+                ?? $this->extractCallRecordId($resourcePath);
+
+            if (!$callRecordId) {
+                continue;
+            }
+
+            // Deduplicate
+            $idempotencyKey = hash('sha256', "ms365-callrecord:{$callRecordId}");
+            if (UserConnectorCallSession::where('external_call_id', $callRecordId)->exists()) {
+                continue;
+            }
+
+            $this->processCallRecord($callRecordId);
+        }
+
+        return response('', 202);
+    }
+
+    protected function processCallRecord(string $callRecordId): void
+    {
+        // Find an MS365 OAuthApp that has tenant_id configured (needed for app token)
+        $oauthApp = $this->findMs365OAuthAppWithTenant();
+        if (!$oauthApp) {
+            Log::warning('MS365 CallRecords: Keine OAuthApp mit tenant_id konfiguriert');
+            return;
+        }
+
+        $appTokenService = app(Microsoft365AppTokenService::class);
+        $token = $appTokenService->getAppToken($oauthApp);
+        if (!$token) {
+            Log::warning('MS365 CallRecords: Kein App-Token verfügbar');
+            return;
+        }
+
+        $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
+
+        $response = Http::withToken($token)
+            ->timeout(30)
+            ->get("{$baseUrl}/communications/callRecords/{$callRecordId}", [
+                '$expand' => 'sessions($expand=segments)',
+            ]);
+
+        if (!$response->successful()) {
+            Log::error('MS365 CallRecords: Fetch fehlgeschlagen', [
+                'callRecordId' => $callRecordId,
+                'status' => $response->status(),
+            ]);
+            return;
+        }
+
+        $record = $response->json();
+        $this->createCallSessionsFromRecord($record);
+    }
+
+    protected function createCallSessionsFromRecord(array $record): void
+    {
+        $callRecordId = $record['id'] ?? null;
+        if (!$callRecordId) {
+            return;
+        }
+
+        $type = $record['type'] ?? 'unknown';
+        $startDateTime = isset($record['startDateTime']) ? Carbon::parse($record['startDateTime']) : null;
+        $endDateTime = isset($record['endDateTime']) ? Carbon::parse($record['endDateTime']) : null;
+
+        $durationSeconds = ($startDateTime && $endDateTime)
+            ? $startDateTime->diffInSeconds($endDateTime)
+            : null;
+
+        $status = ($durationSeconds !== null && $durationSeconds === 0) ? 'missed' : 'completed';
+
+        // Collect all participant user IDs from the call record
+        $participantUserIds = $this->extractParticipantUserIds($record);
+
+        // Find connections that match these participant IDs
+        $connections = UserConnectorConnection::query()
+            ->whereHas('connector', fn ($q) => $q->where('key', 'microsoft365'))
+            ->where('status', 'active')
+            ->get()
+            ->filter(fn ($conn) => in_array($conn->credentials['ms365_user_id'] ?? null, $participantUserIds));
+
+        if ($connections->isEmpty()) {
+            Log::debug('MS365 CallRecords: Keine passende Connection für Participants', [
+                'callRecordId' => $callRecordId,
+                'participantIds' => $participantUserIds,
+            ]);
+            return;
+        }
+
+        // Extract caller/callee from sessions
+        $sessions = $record['sessions'] ?? [];
+        $firstSession = $sessions[0] ?? [];
+        $caller = $firstSession['caller'] ?? $record['organizer'] ?? [];
+        $callee = $firstSession['callee'] ?? [];
+
+        $fromDisplay = $caller['user']['displayName']
+            ?? $caller['phone']['displayName']
+            ?? $caller['phone']['id']
+            ?? null;
+        $toDisplay = $callee['user']['displayName']
+            ?? $callee['phone']['displayName']
+            ?? $callee['phone']['id']
+            ?? null;
+
+        $callerUserId = $caller['user']['id'] ?? null;
+
+        foreach ($connections as $connection) {
+            $userMs365Id = $connection->credentials['ms365_user_id'] ?? null;
+
+            // Determine direction for this user
+            $direction = ($userMs365Id === $callerUserId) ? 'outbound' : 'inbound';
+
+            UserConnectorCallSession::create([
+                'connection_id' => $connection->id,
+                'connector_key' => 'microsoft365',
+                'external_call_id' => $callRecordId,
+                'direction' => $direction,
+                'status' => $status,
+                'from_number' => $fromDisplay,
+                'to_number' => $toDisplay,
+                'started_at' => $startDateTime,
+                'answered_at' => $status === 'completed' ? $startDateTime : null,
+                'ended_at' => $endDateTime,
+                'duration_seconds' => $durationSeconds,
+                'meta' => [
+                    'callType' => $type,
+                    'modalities' => $record['modalities'] ?? [],
+                    'sessionCount' => count($sessions),
+                ],
+            ]);
+
+            Log::info('MS365 CallRecords: CallSession erstellt', [
+                'callRecordId' => $callRecordId,
+                'connection_id' => $connection->id,
+                'direction' => $direction,
+                'status' => $status,
+            ]);
+        }
+    }
+
+    protected function extractParticipantUserIds(array $record): array
+    {
+        $ids = [];
+
+        // From organizer
+        if ($orgId = ($record['organizer']['user']['id'] ?? null)) {
+            $ids[] = $orgId;
+        }
+
+        // From participants array
+        foreach ($record['participants'] ?? [] as $participant) {
+            if ($userId = ($participant['user']['id'] ?? null)) {
+                $ids[] = $userId;
+            }
+        }
+
+        // From sessions caller/callee
+        foreach ($record['sessions'] ?? [] as $session) {
+            if ($userId = ($session['caller']['user']['id'] ?? null)) {
+                $ids[] = $userId;
+            }
+            if ($userId = ($session['callee']['user']['id'] ?? null)) {
+                $ids[] = $userId;
+            }
+            // From segments
+            foreach ($session['segments'] ?? [] as $segment) {
+                if ($userId = ($segment['caller']['user']['id'] ?? null)) {
+                    $ids[] = $userId;
+                }
+                if ($userId = ($segment['callee']['user']['id'] ?? null)) {
+                    $ids[] = $userId;
+                }
+            }
+        }
+
+        return array_unique(array_filter($ids));
+    }
+
+    protected function extractCallRecordId(string $resourcePath): ?string
+    {
+        if (preg_match("/callRecords[\/\(]'?([^'\)\/]+)/", $resourcePath, $matches)) {
+            return $matches[1];
+        }
+        return null;
+    }
+
+    protected function findMs365OAuthAppWithTenant(): ?UserConnectorOAuthApp
+    {
+        return UserConnectorOAuthApp::query()
+            ->whereHas('connector', fn ($q) => $q->where('key', 'microsoft365'))
+            ->where('is_enabled', true)
+            ->get()
+            ->first(fn ($app) => !empty($app->settings['tenant_id']));
     }
 
     protected function mapGraphResourceToEventType(string $resource, string $changeType): string
