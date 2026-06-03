@@ -102,6 +102,7 @@ class UserConnectorsServiceProvider extends ServiceProvider
         if ($this->app->runningInConsole()) {
             $this->commands([
                 RenewWebhookSubscriptions::class,
+                Console\Commands\BackfillSessions::class,
             ]);
         }
 
