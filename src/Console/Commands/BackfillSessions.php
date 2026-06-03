@@ -74,8 +74,8 @@ class BackfillSessions extends Command
             return self::SUCCESS;
         }
 
-        // Show sample payload to understand the structure
-        $sample = $query->first();
+        // Show sample payload to understand the structure (clone to avoid mutating query)
+        $sample = (clone $query)->first();
         if ($sample) {
             $this->info('Beispiel-Payload (Event #' . $sample->id . '):');
             $this->line('  Keys: ' . implode(', ', array_keys($sample->payload ?? [])));
