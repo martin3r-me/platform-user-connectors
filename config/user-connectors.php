@@ -24,7 +24,7 @@ return [
                 'ChannelMessage.Read.All', 'ChannelMessage.Send',
                 'Team.ReadBasic.All', 'Channel.ReadBasic.All',
             ],
-            'extra_params' => ['prompt' => 'consent'],
+            'extra_params' => ['prompt' => 'select_account'],
         ],
         'ringcentral' => [
             'authorize_url' => 'https://platform.ringcentral.com/restapi/oauth/authorize',
