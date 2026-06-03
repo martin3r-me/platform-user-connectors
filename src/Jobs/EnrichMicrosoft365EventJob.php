@@ -10,6 +10,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
+use Platform\UserConnectors\Services\InboundEventService;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365AppTokenService;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365ConnectorService;
 
@@ -115,6 +116,9 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
                     'body_preview' => mb_substr($meta['bodyPreview'] ?? $meta['body_preview'] ?? '', 0, 80) ?: null,
                     'shared_mailbox' => $meta['sharedMailbox'] ?? null,
                 ]);
+
+                // Correlate enriched event into session (now that meta + external_id are populated)
+                $this->correlateSession($event);
             } else {
                 Log::debug('MS365 Enrichment: Keine Daten zurückgegeben', [
                     'event_id' => $event->id,
@@ -352,5 +356,30 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
         $last = end($segments);
 
         return $last ?: null;
+    }
+
+    /**
+     * After enrichment, correlate the event into the appropriate session table.
+     */
+    protected function correlateSession(UserConnectorInboundEvent $event): void
+    {
+        try {
+            $service = app(InboundEventService::class);
+            $eventType = $event->event_type;
+
+            if (str_starts_with($eventType, 'mail.')) {
+                $service->updateMailSession($event);
+            } elseif (str_starts_with($eventType, 'calendar.')) {
+                $service->updateMeetingSession($event);
+            } elseif (str_starts_with($eventType, 'teams.')) {
+                $service->updateMessageSession($event);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('MS365 Enrichment: Session-Korrelation fehlgeschlagen', [
+                'event_id' => $event->id,
+                'event_type' => $event->event_type,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }

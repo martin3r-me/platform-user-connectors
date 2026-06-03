@@ -77,25 +77,14 @@ class InboundEventService
         // Dispatch typed events
         $this->dispatchTypedEvent($event, $eventType);
 
-        // Correlate call events into sessions
+        // Correlate call events into sessions (immediate — payload has all data)
         if (str_starts_with($eventType, 'call.')) {
             $this->updateCallSession($event);
         }
 
-        // Correlate mail events into sessions
-        if (str_starts_with($eventType, 'mail.')) {
-            $this->updateMailSession($event);
-        }
-
-        // Correlate calendar events into sessions
-        if (str_starts_with($eventType, 'calendar.')) {
-            $this->updateMeetingSession($event);
-        }
-
-        // Correlate message events into sessions
-        if (str_starts_with($eventType, 'teams.') || str_starts_with($eventType, 'sms.')) {
-            $this->updateMessageSession($event);
-        }
+        // Mail/Calendar/Teams sessions are correlated AFTER enrichment
+        // (see EnrichMicrosoft365EventJob) because the raw Graph notification
+        // only contains subscriptionId + resource path, not the actual data.
 
         $event->markProcessed();
 
@@ -181,13 +170,14 @@ class InboundEventService
     /**
      * Correlate mail webhook events into a MailSession.
      */
-    protected function updateMailSession(UserConnectorInboundEvent $event): void
+    public function updateMailSession(UserConnectorInboundEvent $event): void
     {
         if (!$event->external_id) {
             return;
         }
 
-        $meta = $event->payload['meta'] ?? $event->payload ?? [];
+        // After enrichment, data lives in $event->meta (merged by EnrichMicrosoft365EventJob)
+        $meta = $event->meta ?? [];
         $eventType = $event->event_type;
 
         if ($eventType === 'mail.deleted') {
@@ -202,10 +192,10 @@ class InboundEventService
             'connector_key' => $event->connector_key,
             'direction' => $event->direction ?? ($meta['direction'] ?? null),
             'status' => $isRead ? 'read' : 'new',
-            'from_address' => $meta['from']['emailAddress']['address'] ?? $meta['fromAddress'] ?? $event->from_identifier,
-            'from_name' => $meta['from']['emailAddress']['name'] ?? $meta['fromName'] ?? null,
-            'to_addresses' => $this->extractAddressList($meta['toRecipients'] ?? $meta['toAddresses'] ?? null),
-            'cc_addresses' => $this->extractAddressList($meta['ccRecipients'] ?? $meta['ccAddresses'] ?? null),
+            'from_address' => $meta['fromAddress'] ?? $event->from_identifier,
+            'from_name' => $meta['fromName'] ?? null,
+            'to_addresses' => $this->extractAddressList($meta['recipients'] ?? $meta['toRecipients'] ?? null),
+            'cc_addresses' => $this->extractAddressList($meta['ccRecipients'] ?? null),
             'subject' => $meta['subject'] ?? null,
             'body_preview' => $meta['bodyPreview'] ?? null,
             'conversation_id' => $meta['conversationId'] ?? null,
@@ -213,7 +203,7 @@ class InboundEventService
             'has_attachments' => (bool) ($meta['hasAttachments'] ?? false),
             'is_draft' => (bool) ($meta['isDraft'] ?? false),
             'shared_mailbox' => $meta['sharedMailbox'] ?? null,
-            'received_at' => isset($meta['receivedDateTime']) ? \Carbon\Carbon::parse($meta['receivedDateTime']) : $event->event_timestamp,
+            'received_at' => $event->event_timestamp,
             'sent_at' => isset($meta['sentDateTime']) ? \Carbon\Carbon::parse($meta['sentDateTime']) : null,
             'meta' => $meta,
         ];
@@ -227,13 +217,14 @@ class InboundEventService
     /**
      * Correlate calendar webhook events into a MeetingSession.
      */
-    protected function updateMeetingSession(UserConnectorInboundEvent $event): void
+    public function updateMeetingSession(UserConnectorInboundEvent $event): void
     {
         if (!$event->external_id) {
             return;
         }
 
-        $meta = $event->payload['meta'] ?? $event->payload ?? [];
+        // After enrichment, data lives in $event->meta
+        $meta = $event->meta ?? [];
         $eventType = $event->event_type;
 
         if ($eventType === 'calendar.deleted') {
@@ -251,7 +242,7 @@ class InboundEventService
         }
 
         // Determine direction: outbound if user is organizer, inbound if attendee
-        $organizerAddress = $meta['organizer']['emailAddress']['address'] ?? $meta['organizerAddress'] ?? null;
+        $organizerAddress = $meta['organizer'] ?? null;
         $direction = $event->direction;
         if (!$direction && $organizerAddress && $event->connection_id) {
             $connection = UserConnectorConnection::find($event->connection_id);
@@ -282,7 +273,7 @@ class InboundEventService
             $status = 'upcoming';
         }
 
-        $attendees = $this->extractAddressList($meta['attendees'] ?? $meta['attendeeAddresses'] ?? null);
+        $attendees = $this->extractAddressList($meta['attendees'] ?? null);
 
         $data = [
             'connection_id' => $event->connection_id,
@@ -290,13 +281,13 @@ class InboundEventService
             'direction' => $direction,
             'status' => $status,
             'organizer_address' => $organizerAddress,
-            'organizer_name' => $meta['organizer']['emailAddress']['name'] ?? $meta['organizerName'] ?? null,
+            'organizer_name' => $meta['organizerName'] ?? null,
             'attendee_addresses' => $attendees,
             'subject' => $meta['subject'] ?? null,
             'body_preview' => $meta['bodyPreview'] ?? null,
-            'location' => $meta['location']['displayName'] ?? $meta['location'] ?? null,
+            'location' => $meta['location'] ?? null,
             'is_online_meeting' => (bool) ($meta['isOnlineMeeting'] ?? false),
-            'online_meeting_url' => $meta['onlineMeetingUrl'] ?? $meta['onlineMeeting']['joinUrl'] ?? null,
+            'online_meeting_url' => $meta['onlineMeetingUrl'] ?? null,
             'start_at' => $startAt,
             'end_at' => $endAt,
             'duration_minutes' => $durationMinutes,
@@ -312,7 +303,7 @@ class InboundEventService
     /**
      * Correlate message webhook events (Teams Chat / SMS) into a MessageSession.
      */
-    protected function updateMessageSession(UserConnectorInboundEvent $event): void
+    public function updateMessageSession(UserConnectorInboundEvent $event): void
     {
         if (!$event->external_id) {
             return;
@@ -323,7 +314,8 @@ class InboundEventService
             return;
         }
 
-        $meta = $event->payload['meta'] ?? $event->payload ?? [];
+        // After enrichment, data lives in $event->meta
+        $meta = $event->meta ?? [];
         $eventType = $event->event_type;
 
         $messageType = str_starts_with($eventType, 'teams.') ? 'teams_chat' : 'sms';
@@ -333,14 +325,14 @@ class InboundEventService
             'connector_key' => $event->connector_key,
             'external_message_id' => $event->external_id,
             'message_type' => $messageType,
-            'direction' => $event->direction ?? ($meta['direction'] ?? null),
-            'from_identifier' => $meta['from']['user']['displayName'] ?? $meta['fromName'] ?? $event->from_identifier,
-            'from_user_id' => $meta['from']['user']['id'] ?? $meta['fromUserId'] ?? null,
-            'to_identifier' => $meta['toName'] ?? $event->to_identifier,
-            'body_preview' => $meta['body']['content'] ?? $meta['bodyPreview'] ?? null,
+            'direction' => $event->direction,
+            'from_identifier' => $meta['fromDisplayName'] ?? $event->from_identifier,
+            'from_user_id' => $meta['fromUserId'] ?? null,
+            'to_identifier' => $event->to_identifier,
+            'body_preview' => $meta['bodyPreview'] ?? null,
             'chat_id' => $meta['chatId'] ?? null,
             'importance' => $meta['importance'] ?? null,
-            'sent_at' => isset($meta['createdDateTime']) ? \Carbon\Carbon::parse($meta['createdDateTime']) : $event->event_timestamp,
+            'sent_at' => $event->event_timestamp,
             'meta' => $meta,
         ]);
     }
