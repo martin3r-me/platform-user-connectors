@@ -14,6 +14,7 @@ class BackfillSessions extends Command
         {--dry-run : Show what would be processed without making changes}
         {--connection= : Only process events for a specific connection ID}
         {--re-enrich : Re-dispatch enrichment jobs for events missing meta/external_id}
+        {--force-re-enrich : Re-dispatch enrichment for ALL events (incl. already enriched) to fix data}
         {--diagnose : Show event statistics without processing}
         {--fix-types : Fix misclassified microsoft365.* event types using resource path}';
 
@@ -46,6 +47,11 @@ class BackfillSessions extends Command
         // Fix misclassified event types
         if ($this->option('fix-types')) {
             return $this->fixEventTypes($connectionFilter);
+        }
+
+        // Force re-enrich: dispatch enrichment for ALL events (to fix data like timestamps)
+        if ($this->option('force-re-enrich')) {
+            return $this->reEnrich($eventTypes, $connectionFilter, force: true);
         }
 
         // Re-enrich mode: dispatch enrichment for events missing data
@@ -262,7 +268,7 @@ class BackfillSessions extends Command
         return self::SUCCESS;
     }
 
-    protected function reEnrich(array $eventTypes, ?string $connectionFilter): int
+    protected function reEnrich(array $eventTypes, ?string $connectionFilter, bool $force = false): int
     {
         $dryRun = $this->option('dry-run');
 
@@ -274,12 +280,12 @@ class BackfillSessions extends Command
                     $q->orWhere('event_type', 'like', $prefix . '%');
                 }
             })
-            ->where(function ($q) {
+            ->when(!$force, fn ($q) => $q->where(function ($q) {
                 $q->whereNull('meta')
                     ->orWhereRaw("json_length(meta) = 0")
                     ->orWhereNull('external_id')
                     ->orWhere('external_id', '');
-            })
+            }))
             ->when($connectionFilter, fn ($q) => $q->where('connection_id', (int) $connectionFilter));
 
         $total = $query->count();

@@ -87,6 +87,10 @@ class Microsoft365SubscriptionService implements SubscribableConnector
         $sharedMailboxSubs = $this->createSharedMailboxSubscriptions($connection);
         $subscriptions = array_merge($subscriptions, $sharedMailboxSubs);
 
+        // Create app-level subscriptions (e.g. Teams chat) if tenant_id is configured
+        $appSubs = $this->createAppLevelSubscriptions($connection);
+        $subscriptions = array_merge($subscriptions, $appSubs);
+
         return $subscriptions;
     }
 
@@ -178,6 +182,88 @@ class Microsoft365SubscriptionService implements SubscribableConnector
         return $subscriptions;
     }
 
+    /**
+     * Create app-level subscriptions (e.g. Teams /chats/getAllMessages).
+     *
+     * These require application permissions (Chat.Read.All) and tenant_id.
+     * Only created once per tenant — skips if another connection already has
+     * an active subscription for the same resource.
+     */
+    protected function createAppLevelSubscriptions(UserConnectorConnection $connection): array
+    {
+        $appResources = config('user-connectors.microsoft365.subscriptions.app_resources', []);
+        if (empty($appResources)) {
+            return [];
+        }
+
+        $oauthApp = $connection->oauthApp;
+        if (!$oauthApp || empty($oauthApp->settings['tenant_id'])) {
+            Log::debug('MS365: App-level Subscriptions erfordern tenant_id in OAuthApp', [
+                'connection_id' => $connection->id,
+            ]);
+            return [];
+        }
+
+        $appToken = $this->appTokenService->getAppToken($oauthApp);
+        if (!$appToken) {
+            Log::warning('MS365: Kein App-Token für App-level Subscriptions', [
+                'connection_id' => $connection->id,
+            ]);
+            return [];
+        }
+
+        $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
+        $webhookUrl = route('user-connectors.webhooks.microsoft365');
+        $expirationDateTime = now()->addSeconds(min($this->getMaxSubscriptionLifetime(), 3600))->toIso8601String();
+
+        $subscriptions = [];
+
+        foreach ($appResources as $res) {
+            $clientState = Str::random(40);
+
+            $subscriptionPayload = [
+                'changeType' => $res['changeType'],
+                'notificationUrl' => $webhookUrl,
+                'resource' => $res['resource'],
+                'expirationDateTime' => $expirationDateTime,
+                'clientState' => $clientState,
+            ];
+
+            $response = Http::withToken($appToken)
+                ->timeout(30)
+                ->post($baseUrl . '/subscriptions', $subscriptionPayload);
+
+            if (!$response->successful()) {
+                Log::warning('MS365: App-level Subscription fehlgeschlagen', [
+                    'connection_id' => $connection->id,
+                    'resource' => $res['resource'],
+                    'status' => $response->status(),
+                    'body' => mb_substr($response->body(), 0, 500),
+                ]);
+                continue;
+            }
+
+            $data = $response->json();
+
+            $subscriptions[] = [
+                'id' => $data['id'],
+                'resource' => $res['resource'],
+                'change_types' => $res['changeType'],
+                'expires_at' => \Carbon\Carbon::parse($data['expirationDateTime'])->timestamp,
+                'client_state' => $clientState,
+                'app_level' => true,
+            ];
+
+            Log::info('MS365: App-level Subscription erstellt', [
+                'connection_id' => $connection->id,
+                'subscription_id' => $data['id'],
+                'resource' => $res['resource'],
+            ]);
+        }
+
+        return $subscriptions;
+    }
+
     public function renewSubscriptions(UserConnectorConnection $connection): array
     {
         $userToken = $this->connectorService->getValidAccessToken($connection);
@@ -199,9 +285,10 @@ class Microsoft365SubscriptionService implements SubscribableConnector
         $renewed = [];
 
         foreach ($existingSubscriptions as $sub) {
-            // Use app token for shared mailbox subscriptions, user token for personal
+            // Use app token for shared mailbox and app-level subscriptions, user token for personal
             $isShared = !empty($sub['shared_mailbox']);
-            $token = $isShared ? ($appToken ?? $userToken) : $userToken;
+            $isAppLevel = !empty($sub['app_level']);
+            $token = ($isShared || $isAppLevel) ? ($appToken ?? $userToken) : $userToken;
 
             $response = Http::withToken($token)
                 ->timeout(30)
@@ -234,6 +321,9 @@ class Microsoft365SubscriptionService implements SubscribableConnector
             ];
             if ($isShared) {
                 $renewedSub['shared_mailbox'] = $sub['shared_mailbox'];
+            }
+            if ($isAppLevel) {
+                $renewedSub['app_level'] = true;
             }
             $renewed[] = $renewedSub;
 

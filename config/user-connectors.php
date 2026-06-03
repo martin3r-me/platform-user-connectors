@@ -80,7 +80,11 @@ return [
                 ['resource' => 'me/mailFolders/inbox/messages', 'changeType' => 'created,updated'],
                 ['resource' => 'me/mailFolders/sentItems/messages', 'changeType' => 'created'],
                 ['resource' => 'me/events', 'changeType' => 'created,updated,deleted'],
-                ['resource' => 'me/chats/getAllMessages', 'changeType' => 'created'],
+            ],
+            // Teams chat subscriptions require application permissions (Chat.Read.All)
+            // and tenant_id configured in OAuthApp settings.
+            'app_resources' => [
+                ['resource' => '/chats/getAllMessages', 'changeType' => 'created'],
             ],
         ],
         'call_records' => [

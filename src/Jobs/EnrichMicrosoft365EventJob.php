@@ -44,11 +44,13 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
         $resourcePath = $payload['resource'] ?? '';
         $resourceId = $payload['resourceData']['id'] ?? $this->extractResourceId($resourcePath);
 
-        // Shared mailbox resources (users/{email}/...) need app token
+        // Shared mailbox resources (users/{email}/...) and app-level resources (chats/...)
+        // need an app token instead of the user's delegated token
         $isSharedMailbox = str_starts_with($resourcePath, 'users/');
+        $isAppLevel = str_starts_with(strtolower($resourcePath), 'chats/');
         $token = null;
 
-        if ($isSharedMailbox) {
+        if ($isSharedMailbox || $isAppLevel) {
             $oauthApp = $connection->oauthApp;
             if ($oauthApp && !empty($oauthApp->settings['tenant_id'])) {
                 $token = app(Microsoft365AppTokenService::class)->getAppToken($oauthApp);
@@ -244,20 +246,32 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             ->values()
             ->all();
 
-        $start = $data['start']['dateTime'] ?? null;
-        $end = $data['end']['dateTime'] ?? null;
+        // Graph returns dateTime without offset + a separate timeZone (Windows name)
+        $startRaw = $data['start']['dateTime'] ?? null;
+        $startTz = $data['start']['timeZone'] ?? null;
+        $endRaw = $data['end']['dateTime'] ?? null;
+        $endTz = $data['end']['timeZone'] ?? null;
         $location = $data['location']['displayName'] ?? null;
+
+        $start = $this->parseGraphDateTime($startRaw, $startTz);
+        $end = $this->parseGraphDateTime($endRaw, $endTz);
+
+        // Store UTC ISO strings in meta for downstream consumers
+        $startUtc = $start?->toIso8601String();
+        $endUtc = $end?->toIso8601String();
 
         return [
             'from' => $organizerName ? "{$organizerName} <{$organizer}>" : $organizer,
             'to' => implode(', ', $attendees),
             'external_id' => $data['id'] ?? $resourceId,
-            'event_timestamp' => $start ? \Carbon\Carbon::parse($start) : null,
+            'event_timestamp' => $start,
             'meta' => [
                 'subject' => $data['subject'] ?? null,
                 'bodyPreview' => $data['bodyPreview'] ?? null,
-                'start' => $start,
-                'end' => $end,
+                'start' => $startUtc,
+                'end' => $endUtc,
+                'startTimeZone' => $startTz,
+                'endTimeZone' => $endTz,
                 'location' => $location,
                 'isOnlineMeeting' => $data['isOnlineMeeting'] ?? false,
                 'onlineMeetingUrl' => $data['onlineMeetingUrl'] ?? null,
@@ -333,6 +347,83 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
                 'fromDisplayName' => $from,
             ],
         ];
+    }
+
+    /**
+     * Parse a Graph API dateTime + timeZone into a UTC Carbon instance.
+     *
+     * Graph returns calendar times as "2026-06-03T14:30:00.0000000" (no offset)
+     * plus a Windows timezone like "W. Europe Standard Time". Without conversion
+     * these get interpreted as UTC, causing 1-2h offsets for European users.
+     */
+    protected function parseGraphDateTime(?string $dateTime, ?string $windowsTimeZone): ?\Carbon\Carbon
+    {
+        if (!$dateTime) {
+            return null;
+        }
+
+        try {
+            $iana = $windowsTimeZone ? $this->windowsToIanaTimezone($windowsTimeZone) : null;
+
+            if ($iana) {
+                return \Carbon\Carbon::parse($dateTime, $iana)->utc();
+            }
+
+            return \Carbon\Carbon::parse($dateTime);
+        } catch (\Exception $e) {
+            Log::warning('MS365 Enrichment: DateTime-Parsing fehlgeschlagen', [
+                'dateTime' => $dateTime,
+                'timeZone' => $windowsTimeZone,
+                'error' => $e->getMessage(),
+            ]);
+            return \Carbon\Carbon::parse($dateTime);
+        }
+    }
+
+    /**
+     * Convert a Windows timezone name to an IANA timezone identifier.
+     * Uses IntlTimeZone when available, otherwise falls back to a mapping table.
+     */
+    protected function windowsToIanaTimezone(string $windowsTimezone): ?string
+    {
+        // Try PHP intl extension first (most accurate)
+        if (class_exists(\IntlTimeZone::class)) {
+            $iana = \IntlTimeZone::getIDForWindowsID($windowsTimezone);
+            if ($iana) {
+                return $iana;
+            }
+        }
+
+        // Already an IANA name or "UTC"
+        if ($windowsTimezone === 'UTC' || str_contains($windowsTimezone, '/')) {
+            return $windowsTimezone;
+        }
+
+        // Fallback mapping for common Windows timezone names
+        $map = [
+            'W. Europe Standard Time' => 'Europe/Berlin',
+            'Central European Standard Time' => 'Europe/Warsaw',
+            'Central Europe Standard Time' => 'Europe/Budapest',
+            'Romance Standard Time' => 'Europe/Paris',
+            'GMT Standard Time' => 'Europe/London',
+            'Greenwich Standard Time' => 'Atlantic/Reykjavik',
+            'E. Europe Standard Time' => 'Europe/Chisinau',
+            'FLE Standard Time' => 'Europe/Kiev',
+            'GTB Standard Time' => 'Europe/Bucharest',
+            'Russian Standard Time' => 'Europe/Moscow',
+            'Eastern Standard Time' => 'America/New_York',
+            'Central Standard Time' => 'America/Chicago',
+            'Mountain Standard Time' => 'America/Denver',
+            'Pacific Standard Time' => 'America/Los_Angeles',
+            'China Standard Time' => 'Asia/Shanghai',
+            'Tokyo Standard Time' => 'Asia/Tokyo',
+            'AUS Eastern Standard Time' => 'Australia/Sydney',
+            'India Standard Time' => 'Asia/Kolkata',
+            'Arab Standard Time' => 'Asia/Riyadh',
+            'Turkey Standard Time' => 'Europe/Istanbul',
+        ];
+
+        return $map[$windowsTimezone] ?? null;
     }
 
     /**
