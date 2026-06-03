@@ -261,22 +261,28 @@ class WebhookController extends Controller
             return;
         }
 
-        // Process only the subscriber's own party (has extensionId).
-        // External parties (PSTN, other accounts) are excluded by RingCentral anyway,
-        // but multiple parties can still appear in a single notification.
+        // Process parties from the telephony session notification.
+        // Prefer the subscriber's own party (has extensionId), but also process
+        // parties without extensionId for terminal states (Disconnected/Gone)
+        // so we don't miss hangup events.
         foreach ($parties as $party) {
             $statusCode = $party['status']['code'] ?? null;
             if (!$statusCode) {
                 continue;
             }
 
-            // Skip parties without extensionId — they're external legs
-            if (empty($party['extensionId'])) {
+            $hasExtensionId = !empty($party['extensionId']);
+            $isTerminalState = in_array($statusCode, ['Disconnected', 'Gone', 'Voicemail']);
+
+            // Skip parties without extensionId UNLESS it's a terminal state
+            // (hangup can arrive on the external leg when the subscriber's party is gone)
+            if (!$hasExtensionId && !$isTerminalState) {
                 continue;
             }
 
             $eventType = match ($statusCode) {
-                'Setup', 'Proceeding' => 'call.new',
+                'Setup' => 'call.new',
+                'Proceeding' => null, // Skip — Setup already created the call.new event
                 'Answered' => 'call.answered',
                 'Disconnected', 'Gone' => 'call.hangup',
                 'Voicemail' => 'call.voicemail',
@@ -292,8 +298,13 @@ class WebhookController extends Controller
             $from = $party['from']['phoneNumber'] ?? $party['from']['name'] ?? null;
             $to = $party['to']['phoneNumber'] ?? $party['to']['name'] ?? null;
 
-            // Build idempotency key from session + party + sequence
-            $idempotencyKey = hash('sha256', "{$telephonySessionId}:{$partyId}:{$statusCode}:{$sequence}");
+            // For terminal states without extensionId, deduplicate per session+status
+            // (multiple parties may report Disconnected, we only need one)
+            if (!$hasExtensionId && $isTerminalState) {
+                $idempotencyKey = hash('sha256', "{$telephonySessionId}:terminal:{$statusCode}:{$sequence}");
+            } else {
+                $idempotencyKey = hash('sha256', "{$telephonySessionId}:{$partyId}:{$statusCode}:{$sequence}");
+            }
 
             // Flatten payload for InboundEventService extraction
             $flatPayload = [
