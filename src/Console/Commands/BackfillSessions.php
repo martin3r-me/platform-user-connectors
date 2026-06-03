@@ -74,34 +74,77 @@ class BackfillSessions extends Command
             return self::SUCCESS;
         }
 
+        // Show sample payload to understand the structure
+        $sample = $query->first();
+        if ($sample) {
+            $this->info('Beispiel-Payload (Event #' . $sample->id . '):');
+            $this->line('  Keys: ' . implode(', ', array_keys($sample->payload ?? [])));
+            $payload = $sample->payload ?? [];
+            foreach (['resource', 'changeType', 'subscriptionId', 'resourceData'] as $key) {
+                $val = $payload[$key] ?? '(nicht vorhanden)';
+                if (is_array($val)) {
+                    $val = json_encode($val);
+                }
+                $this->line("  {$key}: {$val}");
+            }
+            $this->newLine();
+        }
+
         $fixed = 0;
         $unfixable = 0;
 
         $query->orderBy('id')->chunk(100, function ($events) use ($dryRun, &$fixed, &$unfixable) {
             foreach ($events as $event) {
                 $payload = $event->payload ?? [];
-                $resource = $payload['resource'] ?? '';
-                $changeType = $payload['changeType'] ?? '';
 
-                if (!$resource || !$changeType) {
+                // changeType: try payload first, then extract from event_type
+                $changeType = $payload['changeType'] ?? '';
+                if (!$changeType) {
+                    $parts = explode('.', $event->event_type, 2);
+                    $changeType = $parts[1] ?? '';
+                }
+
+                if (!$changeType) {
                     $unfixable++;
                     continue;
                 }
 
-                // Apply corrected mapping logic
-                if (str_contains($resource, 'chats') || str_contains($resource, 'teams')) {
-                    $newType = 'teams.' . $changeType;
-                } elseif (str_contains($resource, 'messages') || str_contains($resource, 'mailFolders')) {
-                    $newType = 'mail.' . $changeType;
-                } elseif (str_contains($resource, 'events') || str_contains($resource, 'calendar')) {
-                    $newType = 'calendar.' . $changeType;
-                } else {
+                // resource: try multiple locations in the payload
+                $resource = $payload['resource']
+                    ?? $payload['resourceData']['@odata.id'] ?? '';
+
+                // Determine new event type from resource path
+                $newType = null;
+                if ($resource) {
+                    if (str_contains($resource, 'chats') || str_contains($resource, 'teams')) {
+                        $newType = 'teams.' . $changeType;
+                    } elseif (str_contains($resource, 'messages') || str_contains($resource, 'mailFolders')) {
+                        $newType = 'mail.' . $changeType;
+                    } elseif (str_contains($resource, 'events') || str_contains($resource, 'calendar')) {
+                        $newType = 'calendar.' . $changeType;
+                    }
+                }
+
+                // If no resource, try to infer from subscription context or other payload clues
+                if (!$newType) {
+                    // Check if any field hints at the type
+                    $payloadStr = strtolower(json_encode($payload));
+                    if (str_contains($payloadStr, 'chat') || str_contains($payloadStr, 'teams')) {
+                        $newType = 'teams.' . $changeType;
+                    } elseif (str_contains($payloadStr, 'message') || str_contains($payloadStr, 'mail') || str_contains($payloadStr, 'inbox')) {
+                        $newType = 'mail.' . $changeType;
+                    } elseif (str_contains($payloadStr, 'event') || str_contains($payloadStr, 'calendar')) {
+                        $newType = 'calendar.' . $changeType;
+                    }
+                }
+
+                if (!$newType) {
                     $unfixable++;
                     continue;
                 }
 
                 if ($dryRun) {
-                    $this->line("  #{$event->id}: {$event->event_type} → {$newType} (resource: {$resource})");
+                    $this->line("  #{$event->id}: {$event->event_type} → {$newType} (resource: " . ($resource ?: 'inferred') . ")");
                 } else {
                     $event->update(['event_type' => $newType]);
                 }
