@@ -49,9 +49,8 @@ class UserConnectorOAuthApp extends Model
         $defaults = (array) config("user-connectors.oauth_defaults.{$connectorKey}", []);
         $appSettings = $this->settings ?? [];
 
-        return array_merge($defaults, [
-            'client_id' => $appSettings['client_id'] ?? null,
-            'client_secret' => $appSettings['client_secret'] ?? null,
-        ]);
+        // App settings override defaults — allows per-app URL overrides
+        // (e.g. sandbox vs production endpoints for RingCentral)
+        return array_merge($defaults, array_filter($appSettings, fn ($v) => $v !== null && $v !== ''));
     }
 }

@@ -2,6 +2,7 @@
 
 namespace Platform\UserConnectors\Livewire\Connectors;
 
+use Livewire\Attributes\Computed;
 use Livewire\Component;
 use Platform\Core\Models\User;
 use Platform\UserConnectors\Models\UserConnector;
@@ -16,6 +17,8 @@ class Settings extends Component
     public string $appName = '';
     public string $clientId = '';
     public string $clientSecret = '';
+    public string $environment = 'production';
+    public string $tenantId = '';
 
     public function mount(): void
     {
@@ -36,6 +39,18 @@ class Settings extends Component
         if (!in_array($role, ['owner', 'admin'])) {
             abort(403, 'Nur Admins können Connector-Settings verwalten.');
         }
+    }
+
+    #[Computed]
+    public function editingConnectorKey(): ?string
+    {
+        if ($this->editingConnectorId) {
+            return UserConnector::find($this->editingConnectorId)?->key;
+        }
+        if ($this->editingAppId) {
+            return UserConnectorOAuthApp::find($this->editingAppId)?->connector?->key;
+        }
+        return null;
     }
 
     public function render()
@@ -59,6 +74,8 @@ class Settings extends Component
         $this->appName = $connector->name;
         $this->clientId = '';
         $this->clientSecret = '';
+        $this->environment = 'production';
+        $this->tenantId = '';
         $this->modalShow = true;
     }
 
@@ -71,6 +88,8 @@ class Settings extends Component
         $this->appName = $app->name;
         $this->clientId = $app->settings['client_id'] ?? '';
         $this->clientSecret = '';
+        $this->environment = $app->settings['environment'] ?? 'production';
+        $this->tenantId = $app->settings['tenant_id'] ?? '';
         $this->modalShow = true;
     }
 
@@ -80,6 +99,27 @@ class Settings extends Component
             'appName' => 'required|string|max:255',
             'clientId' => 'required|string|max:500',
         ]);
+
+        $connectorKey = $this->editingConnectorId
+            ? UserConnector::find($this->editingConnectorId)?->key
+            : ($this->editingAppId ? UserConnectorOAuthApp::find($this->editingAppId)?->connector?->key : null);
+
+        // Build extra settings based on connector type
+        $extraSettings = [];
+
+        if (in_array($connectorKey, ['ringcentral', 'vodafone'])) {
+            $extraSettings['environment'] = $this->environment;
+            // Override URLs based on environment
+            if ($this->environment === 'sandbox') {
+                $domain = $connectorKey === 'vodafone' ? 'platform.devtest.ringcentral.biz' : 'platform.devtest.ringcentral.com';
+                $extraSettings['authorize_url'] = "https://{$domain}/restapi/oauth/authorize";
+                $extraSettings['token_url'] = "https://{$domain}/restapi/oauth/token";
+            }
+        }
+
+        if ($connectorKey === 'microsoft365' && $this->tenantId !== '') {
+            $extraSettings['tenant_id'] = $this->tenantId;
+        }
 
         if ($this->editingAppId) {
             // Update existing
@@ -91,6 +131,7 @@ class Settings extends Component
             if ($this->clientSecret !== '') {
                 $settings['client_secret'] = $this->clientSecret;
             }
+            $settings = array_merge($settings, $extraSettings);
             $app->settings = $settings;
             $app->save();
 
@@ -105,10 +146,10 @@ class Settings extends Component
             $app = UserConnectorOAuthApp::create([
                 'connector_id' => $this->editingConnectorId,
                 'name' => $this->appName,
-                'settings' => [
+                'settings' => array_merge([
                     'client_id' => $this->clientId,
                     'client_secret' => $this->clientSecret,
-                ],
+                ], $extraSettings),
                 'is_enabled' => true,
             ]);
 
@@ -150,6 +191,6 @@ class Settings extends Component
     public function closeModal(): void
     {
         $this->modalShow = false;
-        $this->reset(['editingAppId', 'editingConnectorId', 'appName', 'clientId', 'clientSecret']);
+        $this->reset(['editingAppId', 'editingConnectorId', 'appName', 'clientId', 'clientSecret', 'environment', 'tenantId']);
     }
 }

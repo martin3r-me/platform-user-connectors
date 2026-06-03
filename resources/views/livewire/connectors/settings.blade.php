@@ -144,6 +144,27 @@
                                     <input type="password" wire:model="clientSecret" class="mt-1 block w-full rounded-lg border border-[var(--ui-border)] bg-white text-[var(--ui-secondary)] shadow-sm focus:border-[var(--ui-primary)] focus:ring-[var(--ui-primary)] sm:text-sm" placeholder="{{ $editingAppId ? 'Leer lassen = bestehenden Wert behalten' : '' }}">
                                     @error('clientSecret') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
                                 </div>
+
+                                {{-- Environment (RingCentral / Vodafone) --}}
+                                @if (in_array($this->editingConnectorKey, ['ringcentral', 'vodafone']))
+                                    <div>
+                                        <label class="block text-sm font-medium text-[var(--ui-secondary)]">Umgebung</label>
+                                        <select wire:model="environment" class="mt-1 block w-full rounded-lg border border-[var(--ui-border)] bg-white text-[var(--ui-secondary)] shadow-sm focus:border-[var(--ui-primary)] focus:ring-[var(--ui-primary)] sm:text-sm">
+                                            <option value="production">Production</option>
+                                            <option value="sandbox">Sandbox</option>
+                                        </select>
+                                        <p class="mt-1 text-xs text-gray-500">Sandbox nutzt devtest-Endpoints für Entwicklung/Test.</p>
+                                    </div>
+                                @endif
+
+                                {{-- Tenant ID (Microsoft 365) --}}
+                                @if ($this->editingConnectorKey === 'microsoft365')
+                                    <div>
+                                        <label class="block text-sm font-medium text-[var(--ui-secondary)]">Tenant ID <span class="text-gray-400 font-normal">(optional)</span></label>
+                                        <input type="text" wire:model="tenantId" class="mt-1 block w-full rounded-lg border border-[var(--ui-border)] bg-white text-[var(--ui-secondary)] shadow-sm focus:border-[var(--ui-primary)] focus:ring-[var(--ui-primary)] sm:text-sm" placeholder="z.B. 12345678-abcd-...">
+                                        <p class="mt-1 text-xs text-gray-500">Erforderlich für Shared Mailboxes und Teams Call Records (Application Permissions).</p>
+                                    </div>
+                                @endif
                             </div>
                         </div>
 
