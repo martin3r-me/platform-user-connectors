@@ -3,6 +3,7 @@
 namespace Platform\UserConnectors\Console\Commands;
 
 use Illuminate\Console\Command;
+use Platform\UserConnectors\Jobs\EnrichMicrosoft365EventJob;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
 use Platform\UserConnectors\Services\InboundEventService;
 
@@ -11,13 +12,14 @@ class BackfillSessions extends Command
     protected $signature = 'user-connectors:backfill-sessions
         {--type= : Only backfill a specific type: mail, calendar, teams, sms}
         {--dry-run : Show what would be processed without making changes}
-        {--connection= : Only process events for a specific connection ID}';
+        {--connection= : Only process events for a specific connection ID}
+        {--re-enrich : Re-dispatch enrichment jobs for events missing meta/external_id}
+        {--diagnose : Show event statistics without processing}';
 
     protected $description = 'Backfill mail, meeting and message sessions from existing enriched inbound events';
 
     public function handle(InboundEventService $service): int
     {
-        $dryRun = $this->option('dry-run');
         $typeFilter = $this->option('type');
         $connectionFilter = $this->option('connection');
 
@@ -35,22 +37,124 @@ class BackfillSessions extends Command
             $eventTypes[] = 'sms.';
         }
 
-        $query = UserConnectorInboundEvent::query()
-            ->whereNotNull('connection_id')
-            ->whereNotNull('external_id')
-            ->whereNotNull('meta')
+        // Diagnose mode: show what's in the DB
+        if ($this->option('diagnose')) {
+            return $this->diagnose($eventTypes, $connectionFilter);
+        }
+
+        // Re-enrich mode: dispatch enrichment for events missing data
+        if ($this->option('re-enrich')) {
+            return $this->reEnrich($eventTypes, $connectionFilter);
+        }
+
+        return $this->backfill($service, $eventTypes, $connectionFilter);
+    }
+
+    protected function diagnose(array $eventTypes, ?string $connectionFilter): int
+    {
+        $this->info('=== Diagnose: Inbound Events ===');
+        $this->newLine();
+
+        $baseQuery = fn () => UserConnectorInboundEvent::query()
             ->where(function ($q) use ($eventTypes) {
                 foreach ($eventTypes as $prefix) {
                     $q->orWhere('event_type', 'like', $prefix . '%');
                 }
-            });
+            })
+            ->when($connectionFilter, fn ($q) => $q->where('connection_id', (int) $connectionFilter));
 
-        if ($connectionFilter) {
-            $query->where('connection_id', (int) $connectionFilter);
+        // Total by event_type
+        $byType = $baseQuery()
+            ->selectRaw('event_type, count(*) as cnt')
+            ->groupBy('event_type')
+            ->orderBy('event_type')
+            ->pluck('cnt', 'event_type');
+
+        $this->info('Events nach Typ:');
+        foreach ($byType as $type => $count) {
+            $this->line("  {$type}: {$count}");
+        }
+        $this->newLine();
+
+        // Connection status
+        $withConnection = $baseQuery()->whereNotNull('connection_id')->count();
+        $withoutConnection = $baseQuery()->whereNull('connection_id')->count();
+        $this->info("connection_id: {$withConnection} gesetzt, {$withoutConnection} NULL");
+
+        // External ID status
+        $withExtId = $baseQuery()->whereNotNull('external_id')->where('external_id', '!=', '')->count();
+        $withoutExtId = $baseQuery()->where(fn ($q) => $q->whereNull('external_id')->orWhere('external_id', ''))->count();
+        $this->info("external_id:   {$withExtId} gesetzt, {$withoutExtId} NULL/leer");
+
+        // Meta status
+        $withMeta = $baseQuery()
+            ->whereNotNull('meta')
+            ->whereRaw("json_length(meta) > 0")
+            ->count();
+        $withoutMeta = $baseQuery()
+            ->where(fn ($q) => $q->whereNull('meta')->orWhereRaw("json_length(meta) = 0"))
+            ->count();
+        $this->info("meta:          {$withMeta} mit Daten, {$withoutMeta} leer/NULL");
+
+        // Enrichable (has connection + is MS365 type)
+        $enrichable = $baseQuery()
+            ->whereNotNull('connection_id')
+            ->where('connector_key', 'microsoft365')
+            ->where(fn ($q) => $q->whereNull('meta')->orWhereRaw("json_length(meta) = 0")->orWhereNull('external_id'))
+            ->count();
+        $this->newLine();
+        $this->info("Re-enrichable (connection vorhanden, meta/external_id fehlt): {$enrichable}");
+
+        // Ready for backfill
+        $ready = $baseQuery()
+            ->whereNotNull('connection_id')
+            ->whereNotNull('external_id')
+            ->where('external_id', '!=', '')
+            ->whereNotNull('meta')
+            ->whereRaw("json_length(meta) > 0")
+            ->count();
+        $this->info("Bereit für Session-Backfill (alles vorhanden): {$ready}");
+
+        // Sample of events without meta
+        if ($withoutMeta > 0) {
+            $this->newLine();
+            $this->info('Beispiel-Events ohne Meta (max 5):');
+            $samples = $baseQuery()
+                ->where(fn ($q) => $q->whereNull('meta')->orWhereRaw("json_length(meta) = 0"))
+                ->orderByDesc('id')
+                ->limit(5)
+                ->get(['id', 'event_type', 'connector_key', 'connection_id', 'external_id', 'processing_status', 'created_at']);
+
+            foreach ($samples as $s) {
+                $this->line("  #{$s->id} {$s->event_type} | connector={$s->connector_key} conn={$s->connection_id} ext_id={$s->external_id} status={$s->processing_status} {$s->created_at}");
+            }
         }
 
+        return self::SUCCESS;
+    }
+
+    protected function reEnrich(array $eventTypes, ?string $connectionFilter): int
+    {
+        $dryRun = $this->option('dry-run');
+
+        $query = UserConnectorInboundEvent::query()
+            ->whereNotNull('connection_id')
+            ->where('connector_key', 'microsoft365')
+            ->where(function ($q) use ($eventTypes) {
+                foreach ($eventTypes as $prefix) {
+                    $q->orWhere('event_type', 'like', $prefix . '%');
+                }
+            })
+            ->where(function ($q) {
+                $q->whereNull('meta')
+                    ->orWhereRaw("json_length(meta) = 0")
+                    ->orWhereNull('external_id')
+                    ->orWhere('external_id', '');
+            })
+            ->when($connectionFilter, fn ($q) => $q->where('connection_id', (int) $connectionFilter));
+
         $total = $query->count();
-        $this->info("Gefundene Events mit enriched meta: {$total}");
+        $this->info("Events zum Re-Enrichment: {$total}");
 
         if ($total === 0) {
             $this->info('Nichts zu tun.');
@@ -58,15 +162,7 @@ class BackfillSessions extends Command
         }
 
         if ($dryRun) {
-            $summary = UserConnectorInboundEvent::query()
-                ->whereNotNull('connection_id')
-                ->whereNotNull('external_id')
-                ->whereNotNull('meta')
-                ->where(function ($q) use ($eventTypes) {
-                    foreach ($eventTypes as $prefix) {
-                        $q->orWhere('event_type', 'like', $prefix . '%');
-                    }
-                })
+            $summary = (clone $query)
                 ->selectRaw('event_type, count(*) as cnt')
                 ->groupBy('event_type')
                 ->orderBy('event_type')
@@ -75,7 +171,65 @@ class BackfillSessions extends Command
             foreach ($summary as $type => $count) {
                 $this->line("  {$type}: {$count}");
             }
+            $this->info('Dry-run — keine Jobs dispatched.');
+            return self::SUCCESS;
+        }
 
+        $bar = $this->output->createProgressBar($total);
+        $bar->start();
+        $dispatched = 0;
+
+        $query->orderBy('id')->chunk(100, function ($events) use (&$dispatched, $bar) {
+            foreach ($events as $event) {
+                EnrichMicrosoft365EventJob::dispatch($event->id);
+                $dispatched++;
+                $bar->advance();
+            }
+        });
+
+        $bar->finish();
+        $this->newLine(2);
+        $this->info("{$dispatched} Enrichment-Jobs dispatched. Sessions werden automatisch nach Enrichment erstellt.");
+        $this->info('Warte auf Queue-Verarbeitung, dann erneut --diagnose oder ohne Flags ausführen.');
+
+        return self::SUCCESS;
+    }
+
+    protected function backfill(InboundEventService $service, array $eventTypes, ?string $connectionFilter): int
+    {
+        $dryRun = $this->option('dry-run');
+
+        $query = UserConnectorInboundEvent::query()
+            ->whereNotNull('connection_id')
+            ->whereNotNull('external_id')
+            ->where('external_id', '!=', '')
+            ->whereNotNull('meta')
+            ->whereRaw("json_length(meta) > 0")
+            ->where(function ($q) use ($eventTypes) {
+                foreach ($eventTypes as $prefix) {
+                    $q->orWhere('event_type', 'like', $prefix . '%');
+                }
+            })
+            ->when($connectionFilter, fn ($q) => $q->where('connection_id', (int) $connectionFilter));
+
+        $total = $query->count();
+        $this->info("Gefundene enriched Events: {$total}");
+
+        if ($total === 0) {
+            $this->info('Keine enriched Events gefunden. Versuche --diagnose oder --re-enrich.');
+            return self::SUCCESS;
+        }
+
+        if ($dryRun) {
+            $summary = (clone $query)
+                ->selectRaw('event_type, count(*) as cnt')
+                ->groupBy('event_type')
+                ->orderBy('event_type')
+                ->pluck('cnt', 'event_type');
+
+            foreach ($summary as $type => $count) {
+                $this->line("  {$type}: {$count}");
+            }
             $this->info('Dry-run — keine Änderungen.');
             return self::SUCCESS;
         }
@@ -152,7 +306,6 @@ class BackfillSessions extends Command
             return 'updated';
         }
 
-        // Check if it was actually created (messages skip duplicates)
         $existsNow = $modelClass::where($externalColumn, $event->external_id)->exists();
         return $existsNow ? 'created' : 'skipped';
     }
