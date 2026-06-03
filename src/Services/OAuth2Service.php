@@ -100,14 +100,23 @@ class OAuth2Service
             'grant_type' => 'authorization_code',
             'code' => $code,
             'redirect_uri' => $this->redirectUri($connectorKey),
-            'client_id' => $cfg['client_id'],
         ];
 
-        if (!empty($cfg['client_secret'])) {
-            $tokenParams['client_secret'] = $cfg['client_secret'];
-        }
+        $useBasicAuth = ($cfg['token_auth_method'] ?? 'body') === 'basic';
 
-        $resp = Http::asForm()->post($tokenUrl, $tokenParams);
+        if ($useBasicAuth) {
+            // Send credentials as HTTP Basic Auth header (required by RingCentral)
+            $resp = Http::asForm()
+                ->withBasicAuth($cfg['client_id'], $cfg['client_secret'] ?? '')
+                ->post($tokenUrl, $tokenParams);
+        } else {
+            // Send credentials in request body (default for most providers)
+            $tokenParams['client_id'] = $cfg['client_id'];
+            if (!empty($cfg['client_secret'])) {
+                $tokenParams['client_secret'] = $cfg['client_secret'];
+            }
+            $resp = Http::asForm()->post($tokenUrl, $tokenParams);
+        }
 
         if (!$resp->successful()) {
             \Log::error('UserConnectors OAuth2 Token Exchange Failed', [
@@ -240,12 +249,22 @@ class OAuth2Service
             throw new \RuntimeException("token_url fehlt für OAuth-App '{$oauthApp->name}'.");
         }
 
-        $resp = Http::asForm()->post($tokenUrl, [
+        $useBasicAuth = ($cfg['token_auth_method'] ?? 'body') === 'basic';
+
+        $refreshParams = [
             'grant_type' => 'refresh_token',
             'refresh_token' => $refreshToken,
-            'client_id' => $cfg['client_id'],
-            'client_secret' => $cfg['client_secret'] ?? null,
-        ]);
+        ];
+
+        if ($useBasicAuth) {
+            $resp = Http::asForm()
+                ->withBasicAuth($cfg['client_id'], $cfg['client_secret'] ?? '')
+                ->post($tokenUrl, $refreshParams);
+        } else {
+            $refreshParams['client_id'] = $cfg['client_id'];
+            $refreshParams['client_secret'] = $cfg['client_secret'] ?? null;
+            $resp = Http::asForm()->post($tokenUrl, $refreshParams);
+        }
 
         if (!$resp->successful()) {
             throw new \RuntimeException('Token Refresh fehlgeschlagen: ' . $resp->body());

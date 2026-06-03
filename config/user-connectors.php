@@ -29,12 +29,14 @@ return [
         'ringcentral' => [
             'authorize_url' => 'https://platform.ringcentral.com/restapi/oauth/authorize',
             'token_url' => 'https://platform.ringcentral.com/restapi/oauth/token',
+            'token_auth_method' => 'basic', // RingCentral requires HTTP Basic Auth for token endpoint
             'scopes' => [],
             'extra_params' => [],
         ],
         'vodafone' => [
             'authorize_url' => 'https://platform.ringcentral.biz/restapi/oauth/authorize',
             'token_url' => 'https://platform.ringcentral.biz/restapi/oauth/token',
+            'token_auth_method' => 'basic', // Vodafone/RingCentral requires HTTP Basic Auth for token endpoint
             'scopes' => [],
             'extra_params' => [],
         ],
