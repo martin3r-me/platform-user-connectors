@@ -111,7 +111,7 @@ class Settings extends Component
             $extraSettings['environment'] = $this->environment;
             // Override URLs based on environment
             if ($this->environment === 'sandbox') {
-                $domain = $connectorKey === 'vodafone' ? 'platform.devtest.ringcentral.biz' : 'platform.devtest.ringcentral.com';
+                $domain = 'platform.devtest.ringcentral.com';
                 $extraSettings['authorize_url'] = "https://{$domain}/restapi/oauth/authorize";
                 $extraSettings['token_url'] = "https://{$domain}/restapi/oauth/token";
             }
