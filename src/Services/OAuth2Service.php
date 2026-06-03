@@ -104,6 +104,17 @@ class OAuth2Service
 
         $useBasicAuth = ($cfg['token_auth_method'] ?? 'body') === 'basic';
 
+        \Log::info('UserConnectors OAuth2 Token Exchange Request', [
+            'connector_key' => $connectorKey,
+            'token_url' => $tokenUrl,
+            'auth_method' => $useBasicAuth ? 'basic' : 'body',
+            'grant_type' => $tokenParams['grant_type'],
+            'redirect_uri' => $tokenParams['redirect_uri'],
+            'has_client_id' => !empty($cfg['client_id']),
+            'has_client_secret' => !empty($cfg['client_secret']),
+            'client_id_prefix' => substr($cfg['client_id'] ?? '', 0, 8) . '...',
+        ]);
+
         if ($useBasicAuth) {
             // Send credentials as HTTP Basic Auth header (required by RingCentral)
             $resp = Http::asForm()
@@ -122,7 +133,10 @@ class OAuth2Service
             \Log::error('UserConnectors OAuth2 Token Exchange Failed', [
                 'connector_key' => $connectorKey,
                 'oauth_app_id' => $oauthApp->id,
+                'token_url' => $tokenUrl,
+                'auth_method' => $useBasicAuth ? 'basic' : 'body',
                 'status' => $resp->status(),
+                'response_headers' => $resp->headers(),
                 'body' => $resp->body(),
             ]);
             throw new \RuntimeException('Token Exchange fehlgeschlagen: ' . $resp->body());
