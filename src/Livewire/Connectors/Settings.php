@@ -109,11 +109,14 @@ class Settings extends Component
 
         if (in_array($connectorKey, ['ringcentral', 'vodafone'])) {
             $extraSettings['environment'] = $this->environment;
-            // Override URLs based on environment
             if ($this->environment === 'sandbox') {
                 $domain = 'platform.devtest.ringcentral.com';
                 $extraSettings['authorize_url'] = "https://{$domain}/restapi/oauth/authorize";
                 $extraSettings['token_url'] = "https://{$domain}/restapi/oauth/token";
+            } else {
+                // Production: remove any sandbox URL overrides so config defaults apply
+                $extraSettings['authorize_url'] = null;
+                $extraSettings['token_url'] = null;
             }
         }
 
@@ -131,7 +134,14 @@ class Settings extends Component
             if ($this->clientSecret !== '') {
                 $settings['client_secret'] = $this->clientSecret;
             }
-            $settings = array_merge($settings, $extraSettings);
+            // Merge extra settings, removing null values (clears old overrides)
+            foreach ($extraSettings as $key => $value) {
+                if ($value === null) {
+                    unset($settings[$key]);
+                } else {
+                    $settings[$key] = $value;
+                }
+            }
             $app->settings = $settings;
             $app->save();
 
@@ -146,10 +156,10 @@ class Settings extends Component
             $app = UserConnectorOAuthApp::create([
                 'connector_id' => $this->editingConnectorId,
                 'name' => $this->appName,
-                'settings' => array_merge([
+                'settings' => array_filter(array_merge([
                     'client_id' => $this->clientId,
                     'client_secret' => $this->clientSecret,
-                ], $extraSettings),
+                ], $extraSettings), fn ($v) => $v !== null),
                 'is_enabled' => true,
             ]);
 
