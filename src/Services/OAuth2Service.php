@@ -314,6 +314,7 @@ class OAuth2Service
     {
         try {
             match ($connectorKey) {
+                'microsoft365' => app(\Platform\UserConnectors\Services\Microsoft365\Microsoft365ConnectorService::class)->testConnection($connection),
                 'sipgate' => app(\Platform\UserConnectors\Services\Sipgate\SipgateConnectorService::class)->syncProfile($connection),
                 'ringcentral' => app(\Platform\UserConnectors\Services\RingCentral\RingCentralConnectorService::class)->syncProfile($connection),
                 'vodafone' => app(\Platform\UserConnectors\Services\Vodafone\VodafoneConnectorService::class)->syncProfile($connection),
