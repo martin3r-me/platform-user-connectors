@@ -10,6 +10,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
+use Platform\UserConnectors\Services\Microsoft365\Microsoft365AppTokenService;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365ConnectorService;
 
 class EnrichMicrosoft365EventJob implements ShouldQueue
@@ -36,7 +37,27 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             return;
         }
 
-        $token = $connectorService->getValidAccessToken($connection);
+        $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
+        $eventType = $event->event_type;
+        $payload = $event->payload ?? [];
+        $resourcePath = $payload['resource'] ?? '';
+        $resourceId = $payload['resourceData']['id'] ?? $this->extractResourceId($resourcePath);
+
+        // Shared mailbox resources (users/{email}/...) need app token
+        $isSharedMailbox = str_starts_with($resourcePath, 'users/');
+        $token = null;
+
+        if ($isSharedMailbox) {
+            $oauthApp = $connection->oauthApp;
+            if ($oauthApp && !empty($oauthApp->settings['tenant_id'])) {
+                $token = app(Microsoft365AppTokenService::class)->getAppToken($oauthApp);
+            }
+        }
+
+        if (!$token) {
+            $token = $connectorService->getValidAccessToken($connection);
+        }
+
         if (!$token) {
             Log::warning('MS365 Enrichment: Kein gültiger Token', [
                 'event_id' => $event->id,
@@ -44,12 +65,6 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             ]);
             return;
         }
-
-        $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
-        $eventType = $event->event_type;
-        $payload = $event->payload ?? [];
-        $resourcePath = $payload['resource'] ?? '';
-        $resourceId = $payload['resourceData']['id'] ?? $this->extractResourceId($resourcePath);
 
         if (!$resourceId && !str_contains($eventType, 'deleted')) {
             Log::debug('MS365 Enrichment: Keine Resource-ID', ['event_id' => $event->id]);
@@ -61,9 +76,15 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             ?? $connection->credentials['profile']['userPrincipalName']
             ?? null;
 
+        // For shared mailboxes, extract the mailbox address from the resource path
+        $sharedMailbox = null;
+        if ($isSharedMailbox && preg_match('#^users/([^/]+)/#', $resourcePath, $m)) {
+            $sharedMailbox = $m[1];
+        }
+
         try {
             $enriched = match (true) {
-                str_starts_with($eventType, 'mail.') => $this->enrichMail($baseUrl, $token, $resourcePath, $resourceId, $userEmail),
+                str_starts_with($eventType, 'mail.') => $this->enrichMail($baseUrl, $token, $resourcePath, $resourceId, $userEmail, $sharedMailbox),
                 str_starts_with($eventType, 'calendar.') && !str_contains($eventType, 'deleted') => $this->enrichCalendar($baseUrl, $token, $resourceId),
                 str_starts_with($eventType, 'calendar.') && str_contains($eventType, 'deleted') => $this->enrichCalendarDeleted($resourcePath, $resourceId),
                 str_starts_with($eventType, 'teams.') => $this->enrichTeamsChat($baseUrl, $token, $resourcePath, $connection->credentials['ms365_user_id'] ?? null),
@@ -102,7 +123,7 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
         }
     }
 
-    protected function enrichMail(string $baseUrl, string $token, string $resourcePath, ?string $resourceId, ?string $userEmail = null): ?array
+    protected function enrichMail(string $baseUrl, string $token, string $resourcePath, ?string $resourceId, ?string $userEmail = null, ?string $sharedMailbox = null): ?array
     {
         // Use the full resource path if available, otherwise construct from ID
         $url = $resourcePath
@@ -137,17 +158,37 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             ->values()
             ->all();
 
-        // Direction: if from address matches the connection's user email, it's outbound
+        // Direction detection:
+        // - For shared mailboxes: if from matches the shared mailbox address, it's outbound
+        // - For personal: if from matches the user's email, it's outbound
         $isDraft = $data['isDraft'] ?? false;
+        $matchEmail = $sharedMailbox ?? $userEmail;
         $direction = 'inbound';
         if ($isDraft) {
             $direction = 'outbound';
-        } elseif ($userEmail && $from && str_contains(strtolower($from), strtolower($userEmail))) {
+        } elseif ($matchEmail && $from && str_contains(strtolower($from), strtolower($matchEmail))) {
             $direction = 'outbound';
         }
 
         // Timestamp: use receivedDateTime for inbound, sentDateTime for outbound
         $timestamp = $data['receivedDateTime'] ?? $data['sentDateTime'] ?? null;
+
+        $meta = [
+            'subject' => $data['subject'] ?? null,
+            'bodyPreview' => $data['bodyPreview'] ?? null,
+            'isRead' => $data['isRead'] ?? null,
+            'conversationId' => $data['conversationId'] ?? null,
+            'recipients' => $recipients,
+            'ccRecipients' => $ccRecipients,
+            'hasAttachments' => $data['hasAttachments'] ?? false,
+            'isDraft' => $isDraft,
+            'fromName' => $fromName,
+            'fromAddress' => $from,
+        ];
+
+        if ($sharedMailbox) {
+            $meta['sharedMailbox'] = $sharedMailbox;
+        }
 
         return [
             'from' => $fromName ? "{$fromName} <{$from}>" : $from,
@@ -155,18 +196,7 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             'external_id' => $data['id'] ?? $resourceId,
             'direction' => $direction,
             'event_timestamp' => $timestamp ? \Carbon\Carbon::parse($timestamp) : null,
-            'meta' => [
-                'subject' => $data['subject'] ?? null,
-                'bodyPreview' => $data['bodyPreview'] ?? null,
-                'isRead' => $data['isRead'] ?? null,
-                'conversationId' => $data['conversationId'] ?? null,
-                'recipients' => $recipients,
-                'ccRecipients' => $ccRecipients,
-                'hasAttachments' => $data['hasAttachments'] ?? false,
-                'isDraft' => $isDraft,
-                'fromName' => $fromName,
-                'fromAddress' => $from,
-            ],
+            'meta' => $meta,
         ];
     }
 

@@ -12,6 +12,7 @@ class Microsoft365SubscriptionService implements SubscribableConnector
 {
     public function __construct(
         protected Microsoft365ConnectorService $connectorService,
+        protected Microsoft365AppTokenService $appTokenService,
     ) {}
 
     public function getConnectorKey(): string
@@ -82,14 +83,113 @@ class Microsoft365SubscriptionService implements SubscribableConnector
             ]);
         }
 
+        // Also create shared mailbox subscriptions if configured
+        $sharedMailboxSubs = $this->createSharedMailboxSubscriptions($connection);
+        $subscriptions = array_merge($subscriptions, $sharedMailboxSubs);
+
+        return $subscriptions;
+    }
+
+    /**
+     * Create subscriptions for shared mailboxes using app-level token.
+     *
+     * Shared mailboxes are configured in connection credentials['shared_mailboxes']
+     * as an array of email addresses. Requires Mail.Read (Application Permission).
+     */
+    protected function createSharedMailboxSubscriptions(UserConnectorConnection $connection): array
+    {
+        $sharedMailboxes = $connection->credentials['shared_mailboxes'] ?? [];
+        if (empty($sharedMailboxes)) {
+            return [];
+        }
+
+        $oauthApp = $connection->oauthApp;
+        if (!$oauthApp || empty($oauthApp->settings['tenant_id'])) {
+            Log::warning('MS365: Shared Mailbox Subscriptions erfordern tenant_id in OAuthApp', [
+                'connection_id' => $connection->id,
+            ]);
+            return [];
+        }
+
+        $appToken = $this->appTokenService->getAppToken($oauthApp);
+        if (!$appToken) {
+            Log::warning('MS365: Kein App-Token für Shared Mailbox Subscriptions', [
+                'connection_id' => $connection->id,
+            ]);
+            return [];
+        }
+
+        $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
+        $webhookUrl = route('user-connectors.webhooks.microsoft365');
+        $expirationDateTime = now()->addSeconds($this->getMaxSubscriptionLifetime())->toIso8601String();
+
+        $subscriptions = [];
+
+        foreach ($sharedMailboxes as $mailbox) {
+            $mailboxResources = [
+                ['resource' => "users/{$mailbox}/mailFolders/inbox/messages", 'changeType' => 'created,updated'],
+                ['resource' => "users/{$mailbox}/mailFolders/sentItems/messages", 'changeType' => 'created'],
+            ];
+
+            foreach ($mailboxResources as $res) {
+                $clientState = Str::random(40);
+
+                $response = Http::withToken($appToken)
+                    ->timeout(30)
+                    ->post($baseUrl . '/subscriptions', [
+                        'changeType' => $res['changeType'],
+                        'notificationUrl' => $webhookUrl,
+                        'resource' => $res['resource'],
+                        'expirationDateTime' => $expirationDateTime,
+                        'clientState' => $clientState,
+                    ]);
+
+                if (!$response->successful()) {
+                    Log::error('MS365: Shared Mailbox Subscription fehlgeschlagen', [
+                        'connection_id' => $connection->id,
+                        'mailbox' => $mailbox,
+                        'resource' => $res['resource'],
+                        'status' => $response->status(),
+                        'body' => $response->body(),
+                    ]);
+                    continue;
+                }
+
+                $data = $response->json();
+
+                $subscriptions[] = [
+                    'id' => $data['id'],
+                    'resource' => $res['resource'],
+                    'change_types' => $res['changeType'],
+                    'expires_at' => \Carbon\Carbon::parse($data['expirationDateTime'])->timestamp,
+                    'client_state' => $clientState,
+                    'shared_mailbox' => $mailbox,
+                ];
+
+                Log::info('MS365: Shared Mailbox Subscription erstellt', [
+                    'connection_id' => $connection->id,
+                    'subscription_id' => $data['id'],
+                    'mailbox' => $mailbox,
+                    'resource' => $res['resource'],
+                ]);
+            }
+        }
+
         return $subscriptions;
     }
 
     public function renewSubscriptions(UserConnectorConnection $connection): array
     {
-        $token = $this->connectorService->getValidAccessToken($connection);
-        if (!$token) {
+        $userToken = $this->connectorService->getValidAccessToken($connection);
+        if (!$userToken) {
             throw new \RuntimeException('MS365: Kein gültiger Access-Token für Subscription-Erneuerung.');
+        }
+
+        // Get app token for shared mailbox subscriptions
+        $appToken = null;
+        $oauthApp = $connection->oauthApp;
+        if ($oauthApp && !empty($oauthApp->settings['tenant_id'])) {
+            $appToken = $this->appTokenService->getAppToken($oauthApp);
         }
 
         $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
@@ -99,6 +199,10 @@ class Microsoft365SubscriptionService implements SubscribableConnector
         $renewed = [];
 
         foreach ($existingSubscriptions as $sub) {
+            // Use app token for shared mailbox subscriptions, user token for personal
+            $isShared = !empty($sub['shared_mailbox']);
+            $token = $isShared ? ($appToken ?? $userToken) : $userToken;
+
             $response = Http::withToken($token)
                 ->timeout(30)
                 ->patch($baseUrl . '/subscriptions/' . $sub['id'], [
@@ -109,6 +213,7 @@ class Microsoft365SubscriptionService implements SubscribableConnector
                 Log::warning('MS365: Subscription-Erneuerung fehlgeschlagen, versuche Neuanlage', [
                     'connection_id' => $connection->id,
                     'subscription_id' => $sub['id'],
+                    'shared_mailbox' => $sub['shared_mailbox'] ?? null,
                     'status' => $response->status(),
                 ]);
 
@@ -120,13 +225,17 @@ class Microsoft365SubscriptionService implements SubscribableConnector
             }
 
             $data = $response->json();
-            $renewed[] = [
+            $renewedSub = [
                 'id' => $sub['id'],
                 'resource' => $sub['resource'],
                 'change_types' => $sub['change_types'],
                 'expires_at' => \Carbon\Carbon::parse($data['expirationDateTime'])->timestamp,
                 'client_state' => $sub['client_state'],
             ];
+            if ($isShared) {
+                $renewedSub['shared_mailbox'] = $sub['shared_mailbox'];
+            }
+            $renewed[] = $renewedSub;
 
             Log::info('MS365: Subscription erneuert', [
                 'connection_id' => $connection->id,

@@ -18,7 +18,7 @@ return [
             'scopes' => [
                 'openid', 'profile', 'email', 'offline_access',
                 'User.Read',
-                'Mail.ReadWrite', 'Mail.Send',
+                'Mail.ReadWrite', 'Mail.ReadWrite.Shared', 'Mail.Send',
                 'Calendars.ReadWrite',
                 'Chat.Read', 'Chat.ReadWrite',
                 'ChannelMessage.Read.All', 'ChannelMessage.Send',
@@ -76,6 +76,7 @@ return [
             'max_lifetime_seconds' => 244800, // ~2.83 days (under 3-day Graph limit)
             'resources' => [
                 ['resource' => 'me/mailFolders/inbox/messages', 'changeType' => 'created,updated'],
+                ['resource' => 'me/mailFolders/sentItems/messages', 'changeType' => 'created'],
                 ['resource' => 'me/events', 'changeType' => 'created,updated,deleted'],
                 ['resource' => 'me/chats/getAllMessages', 'changeType' => 'created'],
             ],

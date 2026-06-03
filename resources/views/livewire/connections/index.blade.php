@@ -317,6 +317,9 @@
                                             $context = null;
                                             if (str_starts_with($event->event_type, 'mail.')) {
                                                 $context = \Illuminate\Support\Str::limit($meta['subject'] ?? '', 60);
+                                                if (!empty($meta['sharedMailbox'])) {
+                                                    $context = '[' . $meta['sharedMailbox'] . '] ' . $context;
+                                                }
                                             } elseif (str_starts_with($event->event_type, 'calendar.')) {
                                                 $context = \Illuminate\Support\Str::limit($meta['subject'] ?? '', 40);
                                                 if (!empty($meta['start'])) {
