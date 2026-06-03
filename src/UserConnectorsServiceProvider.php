@@ -170,6 +170,17 @@ class UserConnectorsServiceProvider extends ServiceProvider
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: Phone/Devices Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
         }
+
+        try {
+            $registry = resolve(\Platform\Core\Tools\ToolRegistry::class);
+
+            // Cross-Connector Query Tools
+            $registry->register(new \Platform\UserConnectors\Tools\ListConnectionsTool());
+            $registry->register(new \Platform\UserConnectors\Tools\ListEventsTool());
+            $registry->register(new \Platform\UserConnectors\Tools\ListCallSessionsTool());
+        } catch (\Throwable $e) {
+            \Log::warning('UserConnectors: Query Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
+        }
     }
 
     protected function registerLivewireComponents(): void
