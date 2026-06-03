@@ -544,18 +544,20 @@ class WebhookController extends Controller
 
     protected function mapGraphResourceToEventType(string $resource, string $changeType): string
     {
+        $r = strtolower($resource);
+
         // Teams chat messages: chats/{id}/messages/{id} — check before mail (also has 'messages')
-        if (str_contains($resource, 'chats') || str_contains($resource, 'teams')) {
+        if (str_contains($r, 'chats') || str_contains($r, 'teams')) {
             return 'teams.' . $changeType;
         }
 
-        // Mail: me/messages/{id}, users/{email}/messages/{id}, me/mailFolders/.../messages/...
-        if (str_contains($resource, 'messages') || str_contains($resource, 'mailFolders')) {
+        // Mail: me/messages/{id}, Users/{id}/Messages/{id}, me/mailFolders/.../messages/...
+        if (str_contains($r, 'messages') || str_contains($r, 'mailfolders')) {
             return 'mail.' . $changeType;
         }
 
         // Calendar: me/events/{id}, me/calendar/...
-        if (str_contains($resource, 'events') || str_contains($resource, 'calendar')) {
+        if (str_contains($r, 'events') || str_contains($r, 'calendar')) {
             return 'calendar.' . $changeType;
         }
 

@@ -113,21 +113,21 @@ class BackfillSessions extends Command
                 $resource = $payload['resource']
                     ?? $payload['resourceData']['@odata.id'] ?? '';
 
-                // Determine new event type from resource path
+                // Determine new event type from resource path (case-insensitive)
                 $newType = null;
                 if ($resource) {
-                    if (str_contains($resource, 'chats') || str_contains($resource, 'teams')) {
+                    $r = strtolower($resource);
+                    if (str_contains($r, 'chats') || str_contains($r, 'teams')) {
                         $newType = 'teams.' . $changeType;
-                    } elseif (str_contains($resource, 'messages') || str_contains($resource, 'mailFolders')) {
+                    } elseif (str_contains($r, 'messages') || str_contains($r, 'mailfolders')) {
                         $newType = 'mail.' . $changeType;
-                    } elseif (str_contains($resource, 'events') || str_contains($resource, 'calendar')) {
+                    } elseif (str_contains($r, 'events') || str_contains($r, 'calendar')) {
                         $newType = 'calendar.' . $changeType;
                     }
                 }
 
-                // If no resource, try to infer from subscription context or other payload clues
+                // If no resource, try to infer from full payload content
                 if (!$newType) {
-                    // Check if any field hints at the type
                     $payloadStr = strtolower(json_encode($payload));
                     if (str_contains($payloadStr, 'chat') || str_contains($payloadStr, 'teams')) {
                         $newType = 'teams.' . $changeType;
