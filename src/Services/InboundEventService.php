@@ -231,9 +231,9 @@ class InboundEventService
     }
 
     /**
-     * Resolve connection from RingCentral webhook payload via subscriptionId.
+     * Resolve connection from RingCentral/Vodafone webhook payload via subscriptionId.
      */
-    public function resolveConnectionFromRingCentral(array $payload): ?UserConnectorConnection
+    public function resolveConnectionFromRingCentral(array $payload, string $connectorKey = 'ringcentral'): ?UserConnectorConnection
     {
         $subscriptionId = $payload['subscriptionId'] ?? null;
         if (!$subscriptionId) {
@@ -242,7 +242,7 @@ class InboundEventService
 
         $manager = app(WebhookSubscriptionManager::class);
 
-        return $manager->resolveConnectionBySubscriptionId('ringcentral', $subscriptionId);
+        return $manager->resolveConnectionBySubscriptionId($connectorKey, $subscriptionId);
     }
 
     protected function dispatchTypedEvent(UserConnectorInboundEvent $event, string $eventType): void

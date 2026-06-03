@@ -167,28 +167,33 @@ class WebhookController extends Controller
      */
     public function ringcentral(Request $request)
     {
+        // Determine connector key from route (ringcentral or vodafone)
+        $connectorKey = $request->route()->getName() === 'user-connectors.webhooks.vodafone'
+            ? 'vodafone'
+            : 'ringcentral';
+
         // Validation request
         $validationToken = $request->header('Validation-Token');
         if ($validationToken) {
-            Log::info('UserConnectors RingCentral Webhook: Validation');
+            Log::info("UserConnectors {$connectorKey} Webhook: Validation");
             return response('', 200)
                 ->header('Validation-Token', $validationToken);
         }
 
         $payload = $request->all();
 
-        Log::info('UserConnectors RingCentral Webhook received', [
+        Log::info("UserConnectors {$connectorKey} Webhook received", [
             'event' => $payload['event'] ?? 'unknown',
         ]);
 
         $rcEvent = $payload['event'] ?? '';
 
-        // Resolve connection via subscriptionId
-        $connection = $this->inboundService->resolveConnectionFromRingCentral($payload);
+        // Resolve connection via subscriptionId — search both ringcentral and vodafone connectors
+        $connection = $this->inboundService->resolveConnectionFromRingCentral($payload, $connectorKey);
 
         // For telephony sessions, extract party status and emit per-party call events
         if (str_contains($rcEvent, 'telephony/sessions')) {
-            $this->handleRingCentralTelephonySession($payload, $connection?->id);
+            $this->handleRingCentralTelephonySession($payload, $connection?->id, $connectorKey);
             return response('', 200);
         }
 
@@ -198,7 +203,7 @@ class WebhookController extends Controller
         $idempotencyKey = hash('sha256', "{$subscriptionId}:{$rcEvent}:{$timestamp}");
 
         $this->inboundService->ingest(
-            connectorKey: 'ringcentral',
+            connectorKey: $connectorKey,
             eventType: $eventType,
             payload: $payload,
             idempotencyKey: $idempotencyKey,
@@ -215,7 +220,7 @@ class WebhookController extends Controller
      * The actual call status is in body.parties[].status.code.
      * We extract the primary party and map its status to our call.* events.
      */
-    protected function handleRingCentralTelephonySession(array $payload, ?int $connectionId): void
+    protected function handleRingCentralTelephonySession(array $payload, ?int $connectionId, string $connectorKey = 'ringcentral'): void
     {
         $body = $payload['body'] ?? [];
         $parties = $body['parties'] ?? [];
@@ -280,7 +285,7 @@ class WebhookController extends Controller
             ];
 
             $this->inboundService->ingest(
-                connectorKey: 'ringcentral',
+                connectorKey: $connectorKey,
                 eventType: $eventType,
                 payload: $flatPayload,
                 idempotencyKey: $idempotencyKey,
