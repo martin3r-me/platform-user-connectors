@@ -14,7 +14,8 @@ class BackfillSessions extends Command
         {--dry-run : Show what would be processed without making changes}
         {--connection= : Only process events for a specific connection ID}
         {--re-enrich : Re-dispatch enrichment jobs for events missing meta/external_id}
-        {--diagnose : Show event statistics without processing}';
+        {--diagnose : Show event statistics without processing}
+        {--fix-types : Fix misclassified microsoft365.* event types using resource path}';
 
     protected $description = 'Backfill mail, meeting and message sessions from existing enriched inbound events';
 
@@ -42,6 +43,11 @@ class BackfillSessions extends Command
             return $this->diagnose($eventTypes, $connectionFilter);
         }
 
+        // Fix misclassified event types
+        if ($this->option('fix-types')) {
+            return $this->fixEventTypes($connectionFilter);
+        }
+
         // Re-enrich mode: dispatch enrichment for events missing data
         if ($this->option('re-enrich')) {
             return $this->reEnrich($eventTypes, $connectionFilter);
@@ -50,14 +56,83 @@ class BackfillSessions extends Command
         return $this->backfill($service, $eventTypes, $connectionFilter);
     }
 
+    protected function fixEventTypes(?string $connectionFilter): int
+    {
+        $dryRun = $this->option('dry-run');
+
+        // Find events with microsoft365.* type that should be mail/calendar/teams
+        $query = UserConnectorInboundEvent::query()
+            ->where('connector_key', 'microsoft365')
+            ->where('event_type', 'like', 'microsoft365.%')
+            ->when($connectionFilter, fn ($q) => $q->where('connection_id', (int) $connectionFilter));
+
+        $total = $query->count();
+        $this->info("Events mit microsoft365.* Typ: {$total}");
+
+        if ($total === 0) {
+            $this->info('Keine falsch klassifizierten Events gefunden.');
+            return self::SUCCESS;
+        }
+
+        $fixed = 0;
+        $unfixable = 0;
+
+        $query->orderBy('id')->chunk(100, function ($events) use ($dryRun, &$fixed, &$unfixable) {
+            foreach ($events as $event) {
+                $payload = $event->payload ?? [];
+                $resource = $payload['resource'] ?? '';
+                $changeType = $payload['changeType'] ?? '';
+
+                if (!$resource || !$changeType) {
+                    $unfixable++;
+                    continue;
+                }
+
+                // Apply corrected mapping logic
+                if (str_contains($resource, 'chats') || str_contains($resource, 'teams')) {
+                    $newType = 'teams.' . $changeType;
+                } elseif (str_contains($resource, 'messages') || str_contains($resource, 'mailFolders')) {
+                    $newType = 'mail.' . $changeType;
+                } elseif (str_contains($resource, 'events') || str_contains($resource, 'calendar')) {
+                    $newType = 'calendar.' . $changeType;
+                } else {
+                    $unfixable++;
+                    continue;
+                }
+
+                if ($dryRun) {
+                    $this->line("  #{$event->id}: {$event->event_type} → {$newType} (resource: {$resource})");
+                } else {
+                    $event->update(['event_type' => $newType]);
+                }
+                $fixed++;
+            }
+        });
+
+        if ($dryRun) {
+            $this->newLine();
+            $this->info("Dry-run: {$fixed} würden gefixt, {$unfixable} nicht zuordenbar.");
+        } else {
+            $this->info("Ergebnis: {$fixed} event_types korrigiert, {$unfixable} nicht zuordenbar.");
+            if ($fixed > 0) {
+                $this->info('Jetzt --re-enrich ausführen um die korrigierten Events anzureichern.');
+            }
+        }
+
+        return self::SUCCESS;
+    }
+
     protected function diagnose(array $eventTypes, ?string $connectionFilter): int
     {
         $this->info('=== Diagnose: Inbound Events ===');
         $this->newLine();
 
+        // Include microsoft365.* events (likely misclassified mail/calendar/teams)
+        $allPrefixes = array_merge($eventTypes, ['microsoft365.']);
+
         $baseQuery = fn () => UserConnectorInboundEvent::query()
-            ->where(function ($q) use ($eventTypes) {
-                foreach ($eventTypes as $prefix) {
+            ->where(function ($q) use ($allPrefixes) {
+                foreach ($allPrefixes as $prefix) {
                     $q->orWhere('event_type', 'like', $prefix . '%');
                 }
             })
@@ -71,8 +146,19 @@ class BackfillSessions extends Command
             ->pluck('cnt', 'event_type');
 
         $this->info('Events nach Typ:');
+        $misclassified = 0;
         foreach ($byType as $type => $count) {
-            $this->line("  {$type}: {$count}");
+            $suffix = '';
+            if (str_starts_with($type, 'microsoft365.')) {
+                $suffix = ' ← falsch klassifiziert! (--fix-types)';
+                $misclassified += $count;
+            }
+            $this->line("  {$type}: {$count}{$suffix}");
+        }
+        if ($misclassified > 0) {
+            $this->newLine();
+            $this->warn("{$misclassified} Events als microsoft365.* statt mail.*/calendar.*/teams.* gespeichert.");
+            $this->warn('Führe --fix-types aus, dann --re-enrich, dann nochmal ohne Flags.');
         }
         $this->newLine();
 
