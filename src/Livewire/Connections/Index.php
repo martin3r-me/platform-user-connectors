@@ -67,7 +67,8 @@ class Index extends Component
         $connectorKeys = $connections->pluck('connector.key')->unique()->filter()->toArray();
 
         // Auto-expire stale ringing/active sessions (no hangup received)
-        UserConnectorCallSession::whereIn('status', ['ringing', 'active'])
+        UserConnectorCallSession::whereIn('connection_id', $connectionIds)
+            ->whereIn('status', ['ringing', 'active'])
             ->where('started_at', '<', now()->subMinutes(2))
             ->update([
                 'status' => 'missed',
@@ -75,45 +76,21 @@ class Index extends Component
                 'hangup_cause' => 'noAnswer',
             ]);
 
-        // Call sessions (grouped call lifecycle)
+        // Call sessions (grouped call lifecycle) — only user's own connections
         $callSessions = UserConnectorCallSession::query()
-            ->where(function ($q) use ($connectionIds, $connectorKeys) {
-                $q->whereIn('connection_id', $connectionIds);
-                if (!empty($connectorKeys)) {
-                    $q->orWhere(function ($q2) use ($connectorKeys) {
-                        $q2->whereNull('connection_id')
-                            ->whereIn('connector_key', $connectorKeys);
-                    });
-                }
-            })
+            ->whereIn('connection_id', $connectionIds)
             ->recent(30)
             ->get();
 
-        // Mail sessions
+        // Mail sessions — only user's own connections
         $mailSessions = UserConnectorMailSession::query()
-            ->where(function ($q) use ($connectionIds, $connectorKeys) {
-                $q->whereIn('connection_id', $connectionIds);
-                if (!empty($connectorKeys)) {
-                    $q->orWhere(function ($q2) use ($connectorKeys) {
-                        $q2->whereNull('connection_id')
-                            ->whereIn('connector_key', $connectorKeys);
-                    });
-                }
-            })
+            ->whereIn('connection_id', $connectionIds)
             ->recent(30)
             ->get();
 
         // Meeting sessions — auto-update status from time
         $activeMeetings = UserConnectorMeetingSession::query()
-            ->where(function ($q) use ($connectionIds, $connectorKeys) {
-                $q->whereIn('connection_id', $connectionIds);
-                if (!empty($connectorKeys)) {
-                    $q->orWhere(function ($q2) use ($connectorKeys) {
-                        $q2->whereNull('connection_id')
-                            ->whereIn('connector_key', $connectorKeys);
-                    });
-                }
-            })
+            ->whereIn('connection_id', $connectionIds)
             ->whereIn('status', ['upcoming', 'in_progress'])
             ->get();
 
@@ -122,43 +99,19 @@ class Index extends Component
         }
 
         $meetingSessions = UserConnectorMeetingSession::query()
-            ->where(function ($q) use ($connectionIds, $connectorKeys) {
-                $q->whereIn('connection_id', $connectionIds);
-                if (!empty($connectorKeys)) {
-                    $q->orWhere(function ($q2) use ($connectorKeys) {
-                        $q2->whereNull('connection_id')
-                            ->whereIn('connector_key', $connectorKeys);
-                    });
-                }
-            })
+            ->whereIn('connection_id', $connectionIds)
             ->recent(30)
             ->get();
 
-        // Message sessions
+        // Message sessions — only user's own connections
         $messageSessions = UserConnectorMessageSession::query()
-            ->where(function ($q) use ($connectionIds, $connectorKeys) {
-                $q->whereIn('connection_id', $connectionIds);
-                if (!empty($connectorKeys)) {
-                    $q->orWhere(function ($q2) use ($connectorKeys) {
-                        $q2->whereNull('connection_id')
-                            ->whereIn('connector_key', $connectorKeys);
-                    });
-                }
-            })
+            ->whereIn('connection_id', $connectionIds)
             ->recent(30)
             ->get();
 
-        // Inbound events for user's connections (+ unmatched events by connector key)
+        // Inbound events — only user's own connections
         $recentEvents = UserConnectorInboundEvent::query()
-            ->where(function ($q) use ($connectionIds, $connectorKeys) {
-                $q->whereIn('connection_id', $connectionIds);
-                if (!empty($connectorKeys)) {
-                    $q->orWhere(function ($q2) use ($connectorKeys) {
-                        $q2->whereNull('connection_id')
-                            ->whereIn('connector_key', $connectorKeys);
-                    });
-                }
-            })
+            ->whereIn('connection_id', $connectionIds)
             ->orderByDesc('created_at')
             ->limit(50)
             ->get();

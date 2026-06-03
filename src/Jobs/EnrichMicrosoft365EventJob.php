@@ -104,9 +104,22 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
 
                 $event->update($update);
 
+                $meta = $enriched['meta'] ?? [];
                 Log::info('MS365 Enrichment: Event angereichert', [
                     'event_id' => $event->id,
                     'event_type' => $eventType,
+                    'connection_id' => $event->connection_id,
+                    'direction' => $enriched['direction'] ?? null,
+                    'from' => $enriched['from'] ?? null,
+                    'subject' => $meta['subject'] ?? null,
+                    'body_preview' => mb_substr($meta['bodyPreview'] ?? $meta['body_preview'] ?? '', 0, 80) ?: null,
+                    'shared_mailbox' => $meta['sharedMailbox'] ?? null,
+                ]);
+            } else {
+                Log::debug('MS365 Enrichment: Keine Daten zurückgegeben', [
+                    'event_id' => $event->id,
+                    'event_type' => $eventType,
+                    'resource' => $resourcePath,
                 ]);
             }
         } catch (\Exception $e) {
@@ -140,6 +153,7 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             Log::warning('MS365 Enrichment: Mail-Fetch fehlgeschlagen', [
                 'status' => $response->status(),
                 'resource' => $resourcePath,
+                'error' => mb_substr($response->body(), 0, 300),
             ]);
             return null;
         }
@@ -212,6 +226,7 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             Log::warning('MS365 Enrichment: Calendar-Fetch fehlgeschlagen', [
                 'status' => $response->status(),
                 'resourceId' => $resourceId,
+                'error' => mb_substr($response->body(), 0, 300),
             ]);
             return null;
         }
@@ -274,6 +289,7 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             Log::warning('MS365 Enrichment: Teams-Chat-Fetch fehlgeschlagen', [
                 'status' => $response->status(),
                 'resource' => $resourcePath,
+                'error' => mb_substr($response->body(), 0, 300),
             ]);
             return null;
         }

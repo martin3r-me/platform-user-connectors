@@ -143,6 +143,15 @@ class WebhookController extends Controller
             // Determine event type from resource path
             $eventType = $this->mapGraphResourceToEventType($resource, $changeType);
 
+            Log::info('MS365 Webhook: Notification verarbeitet', [
+                'event_type' => $eventType,
+                'change_type' => $changeType,
+                'resource' => $resource,
+                'connection_id' => $connection?->id,
+                'connection_name' => $connection?->name,
+                'resolved' => $connection !== null,
+            ]);
+
             $idempotencyKey = hash('sha256', "{$subscriptionId}:{$resource}:{$changeType}:" . json_encode($notification));
 
             $event = $this->inboundService->ingest(
@@ -152,6 +161,14 @@ class WebhookController extends Controller
                 idempotencyKey: $idempotencyKey,
                 connectionId: $connection?->id,
             );
+
+            if ($event && !$connection) {
+                Log::warning('MS365 Webhook: Event ohne Connection gespeichert (Subscription nicht aufgelöst)', [
+                    'event_id' => $event->id,
+                    'event_type' => $eventType,
+                    'subscription_id' => $subscriptionId,
+                ]);
+            }
 
             // Dispatch enrichment job to fetch actual content from Graph API
             if ($event && $connection) {
@@ -182,14 +199,25 @@ class WebhookController extends Controller
 
         $payload = $request->all();
 
-        Log::info("UserConnectors {$connectorKey} Webhook received", [
-            'event' => $payload['event'] ?? 'unknown',
-        ]);
-
         $rcEvent = $payload['event'] ?? '';
 
         // Resolve connection via subscriptionId — search both ringcentral and vodafone connectors
         $connection = $this->inboundService->resolveConnectionFromRingCentral($payload, $connectorKey);
+
+        Log::info("UserConnectors {$connectorKey} Webhook received", [
+            'event' => $rcEvent ?: 'unknown',
+            'connection_id' => $connection?->id,
+            'connection_name' => $connection?->name,
+            'resolved' => $connection !== null,
+            'subscription_id' => $payload['subscriptionId'] ?? null,
+        ]);
+
+        if (!$connection) {
+            Log::warning("UserConnectors {$connectorKey} Webhook: Connection nicht aufgelöst", [
+                'event' => $rcEvent,
+                'subscription_id' => $payload['subscriptionId'] ?? null,
+            ]);
+        }
 
         // For telephony sessions, extract party status and emit per-party call events
         if (str_contains($rcEvent, 'telephony/sessions')) {
