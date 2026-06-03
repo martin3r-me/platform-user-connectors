@@ -143,10 +143,18 @@ class InboundEventService
             return;
         }
 
+        if ($eventType === 'call.voicemail') {
+            $session->update([
+                'status' => 'voicemail',
+            ]);
+            return;
+        }
+
         if ($eventType === 'call.hangup') {
             $cause = $payload['cause'] ?? null;
 
             $status = match (true) {
+                $session->status === 'voicemail' => 'voicemail',
                 $session->answered_at !== null => 'completed',
                 $cause === 'busy' => 'busy',
                 $cause === 'cancel' => 'cancelled',
