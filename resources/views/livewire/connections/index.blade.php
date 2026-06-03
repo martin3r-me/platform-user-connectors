@@ -1,6 +1,6 @@
 <x-ui-page>
     <x-slot name="navbar">
-        <x-ui-page-navbar title="Meine Connectoren" icon="heroicon-o-link" />
+        <x-ui-page-navbar title="Meine Verbindungen" icon="heroicon-o-link" />
     </x-slot>
 
     <x-ui-page-container spacing="space-y-8">
@@ -168,6 +168,10 @@
                                     @endif
                                 </div>
                                 <div class="flex items-center gap-2">
+                                    <x-ui-button variant="secondary-outline" size="sm" wire:click="openSettings({{ $connection->id }})">
+                                        @svg('heroicon-o-cog-6-tooth', 'w-4 h-4')
+                                        Einstellungen
+                                    </x-ui-button>
                                     <x-ui-button variant="secondary-outline" size="sm" wire:click="testConnection({{ $connection->id }})">
                                         Testen
                                     </x-ui-button>
@@ -605,6 +609,91 @@
                     <div class="border-t border-[var(--ui-border)] px-6 py-3 flex justify-end">
                         <x-ui-button variant="secondary-outline" wire:click="closeAppSelect">
                             Abbrechen
+                        </x-ui-button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    @endif
+
+    {{-- Settings Modal --}}
+    @if ($settingsModal)
+        @php
+            $settingsConnection = \Platform\UserConnectors\Models\UserConnectorConnection::with('connector')->find($settingsConnectionId);
+        @endphp
+        <div class="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="settings-modal-title" role="dialog" aria-modal="true">
+            <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+                <div class="fixed inset-0 bg-gray-500/75 transition-opacity" wire:click="closeSettings"></div>
+                <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+
+                <div class="relative inline-block align-bottom bg-white rounded-2xl text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+                    <div class="px-6 pt-5 pb-4">
+                        <h3 class="text-lg font-medium text-[var(--ui-secondary)] mb-1" id="settings-modal-title">
+                            Verbindungs-Einstellungen
+                        </h3>
+                        @if ($settingsConnection)
+                            <p class="text-sm text-[var(--ui-muted)] mb-5">
+                                {{ $settingsConnection->name }} ({{ $settingsConnection->connector?->name ?? '?' }})
+                            </p>
+                        @endif
+
+                        <div class="space-y-6">
+                            {{-- Webhooks --}}
+                            <div>
+                                <h4 class="text-sm font-medium text-[var(--ui-secondary)] mb-3">Webhooks</h4>
+                                <label class="flex items-center justify-between cursor-pointer">
+                                    <span class="text-sm text-[var(--ui-secondary)]">Webhook-Subscriptions aktiv</span>
+                                    <button
+                                        type="button"
+                                        wire:click="$toggle('settingsSubscriptionsEnabled')"
+                                        class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--ui-primary)] focus:ring-offset-2 {{ $settingsSubscriptionsEnabled ? 'bg-[var(--ui-primary)]' : 'bg-gray-200' }}"
+                                        role="switch"
+                                        aria-checked="{{ $settingsSubscriptionsEnabled ? 'true' : 'false' }}"
+                                    >
+                                        <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out {{ $settingsSubscriptionsEnabled ? 'translate-x-5' : 'translate-x-0' }}"></span>
+                                    </button>
+                                </label>
+                            </div>
+
+                            {{-- CRM Integration --}}
+                            <div>
+                                <h4 class="text-sm font-medium text-[var(--ui-secondary)] mb-3">CRM-Integration</h4>
+                                <div class="space-y-3">
+                                    <label class="flex items-center justify-between cursor-pointer">
+                                        <span class="text-sm text-[var(--ui-secondary)]">Engagement anlegen wenn Kontakt im CRM vorhanden</span>
+                                        <button
+                                            type="button"
+                                            wire:click="$toggle('settingsCrmCreateEngagement')"
+                                            class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--ui-primary)] focus:ring-offset-2 {{ $settingsCrmCreateEngagement ? 'bg-[var(--ui-primary)]' : 'bg-gray-200' }}"
+                                            role="switch"
+                                            aria-checked="{{ $settingsCrmCreateEngagement ? 'true' : 'false' }}"
+                                        >
+                                            <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out {{ $settingsCrmCreateEngagement ? 'translate-x-5' : 'translate-x-0' }}"></span>
+                                        </button>
+                                    </label>
+                                    <label class="flex items-center justify-between cursor-pointer">
+                                        <span class="text-sm text-[var(--ui-secondary)]">Kontakt anlegen wenn nicht im CRM gefunden</span>
+                                        <button
+                                            type="button"
+                                            wire:click="$toggle('settingsCrmCreateContact')"
+                                            class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--ui-primary)] focus:ring-offset-2 {{ $settingsCrmCreateContact ? 'bg-[var(--ui-primary)]' : 'bg-gray-200' }}"
+                                            role="switch"
+                                            aria-checked="{{ $settingsCrmCreateContact ? 'true' : 'false' }}"
+                                        >
+                                            <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out {{ $settingsCrmCreateContact ? 'translate-x-5' : 'translate-x-0' }}"></span>
+                                        </button>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-[var(--ui-border)] px-6 py-3 flex justify-end gap-2">
+                        <x-ui-button variant="secondary-outline" wire:click="closeSettings">
+                            Abbrechen
+                        </x-ui-button>
+                        <x-ui-button variant="primary" wire:click="saveSettings">
+                            Speichern
                         </x-ui-button>
                     </div>
                 </div>

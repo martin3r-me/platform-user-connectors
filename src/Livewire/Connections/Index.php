@@ -27,6 +27,12 @@ class Index extends Component
     public ?int $appSelectConnectorId = null;
     public ?string $appSelectConnectorKey = null;
 
+    public bool $settingsModal = false;
+    public ?int $settingsConnectionId = null;
+    public bool $settingsCrmCreateEngagement = false;
+    public bool $settingsCrmCreateContact = false;
+    public bool $settingsSubscriptionsEnabled = true;
+
     public function render()
     {
         /** @var User $user */
@@ -294,5 +300,61 @@ class Index extends Component
             $connection->makeDefault();
             session()->flash('status', "'{$connection->name}' ist jetzt die Standard-Verbindung.");
         }
+    }
+
+    public function openSettings(int $connectionId): void
+    {
+        $connection = UserConnectorConnection::query()
+            ->where('id', $connectionId)
+            ->where('owner_user_id', auth()->id())
+            ->first();
+
+        if (!$connection) {
+            session()->flash('error', 'Connection nicht gefunden.');
+            return;
+        }
+
+        $settings = $connection->credentials['settings'] ?? [];
+
+        $this->settingsConnectionId = $connectionId;
+        $this->settingsSubscriptionsEnabled = $settings['subscriptions_enabled'] ?? true;
+        $this->settingsCrmCreateEngagement = $settings['crm_create_engagement'] ?? false;
+        $this->settingsCrmCreateContact = $settings['crm_create_contact'] ?? false;
+        $this->settingsModal = true;
+    }
+
+    public function saveSettings(): void
+    {
+        $connection = UserConnectorConnection::query()
+            ->where('id', $this->settingsConnectionId)
+            ->where('owner_user_id', auth()->id())
+            ->first();
+
+        if (!$connection) {
+            session()->flash('error', 'Connection nicht gefunden.');
+            $this->closeSettings();
+            return;
+        }
+
+        $credentials = $connection->credentials;
+        $credentials['settings'] = array_merge($credentials['settings'] ?? [], [
+            'subscriptions_enabled' => $this->settingsSubscriptionsEnabled,
+            'crm_create_engagement' => $this->settingsCrmCreateEngagement,
+            'crm_create_contact' => $this->settingsCrmCreateContact,
+        ]);
+        $connection->credentials = $credentials;
+        $connection->save();
+
+        session()->flash('status', 'Einstellungen gespeichert.');
+        $this->closeSettings();
+    }
+
+    public function closeSettings(): void
+    {
+        $this->settingsModal = false;
+        $this->settingsConnectionId = null;
+        $this->settingsCrmCreateEngagement = false;
+        $this->settingsCrmCreateContact = false;
+        $this->settingsSubscriptionsEnabled = true;
     }
 }
