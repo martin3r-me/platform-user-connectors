@@ -280,6 +280,211 @@
             @endif
         </x-ui-panel>
 
+        {{-- Mail Sessions --}}
+        <x-ui-panel title="E-Mails" subtitle="Eingehende und ausgehende E-Mails deiner Verbindungen" wire:poll.5s>
+            @if ($mailSessions->isEmpty())
+                <p class="text-sm text-[var(--ui-muted)]">Noch keine E-Mails erfasst.</p>
+            @else
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-[var(--ui-border)]/60">
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Zeit</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Connector</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Richtung</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Von</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Betreff</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Status</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]"></th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-[var(--ui-border)]/40">
+                            @foreach ($mailSessions as $mail)
+                                <tr class="hover:bg-[var(--ui-bg)] {{ $mail->isUnread() ? 'font-medium' : '' }}">
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-muted)] whitespace-nowrap">
+                                        {{ $mail->received_at?->format('d.m. H:i') ?? $mail->created_at->format('d.m. H:i') }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        <x-ui-badge size="sm" variant="neutral">{{ $mail->connector_key }}</x-ui-badge>
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @if ($mail->direction === 'inbound')
+                                            <span class="text-green-600">&#8592; eingehend</span>
+                                        @elseif ($mail->direction === 'outbound')
+                                            <span class="text-blue-600">&#8594; ausgehend</span>
+                                        @else
+                                            <span class="text-[var(--ui-muted)]">-</span>
+                                        @endif
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)] max-w-[150px] truncate" title="{{ $mail->from_address }}">
+                                        {{ $mail->from_name ?? $mail->from_address ?? '-' }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)] max-w-[250px] truncate" title="{{ $mail->subject }}">
+                                        @if ($mail->shared_mailbox)
+                                            <span class="text-[var(--ui-muted)]">[{{ $mail->shared_mailbox }}]</span>
+                                        @endif
+                                        {{ $mail->subject ?? '-' }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @if ($mail->isUnread())
+                                            <x-ui-badge size="sm" variant="primary">Neu</x-ui-badge>
+                                        @else
+                                            <x-ui-badge size="sm" variant="neutral">Gelesen</x-ui-badge>
+                                        @endif
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @if ($mail->has_attachments)
+                                            @svg('heroicon-o-paper-clip', 'w-4 h-4 text-[var(--ui-muted)]')
+                                        @endif
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            @endif
+        </x-ui-panel>
+
+        {{-- Meeting Sessions --}}
+        <x-ui-panel title="Termine" subtitle="Kalender-Termine deiner Verbindungen" wire:poll.5s>
+            @if ($meetingSessions->isEmpty())
+                <p class="text-sm text-[var(--ui-muted)]">Noch keine Termine erfasst.</p>
+            @else
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-[var(--ui-border)]/60">
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Zeit</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Connector</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Richtung</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Organizer</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Betreff</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Ort</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-[var(--ui-border)]/40">
+                            @foreach ($meetingSessions as $meeting)
+                                <tr class="hover:bg-[var(--ui-bg)]">
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-muted)] whitespace-nowrap">
+                                        @if ($meeting->start_at)
+                                            {{ $meeting->start_at->format('d.m. H:i') }}
+                                            @if ($meeting->end_at)
+                                                – {{ $meeting->end_at->format('H:i') }}
+                                            @endif
+                                        @else
+                                            {{ $meeting->created_at->format('d.m. H:i') }}
+                                        @endif
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        <x-ui-badge size="sm" variant="neutral">{{ $meeting->connector_key }}</x-ui-badge>
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @if ($meeting->direction === 'inbound')
+                                            <span class="text-green-600">&#8592; Teilnehmer</span>
+                                        @elseif ($meeting->direction === 'outbound')
+                                            <span class="text-blue-600">&#8594; Organizer</span>
+                                        @else
+                                            <span class="text-[var(--ui-muted)]">-</span>
+                                        @endif
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)] max-w-[150px] truncate" title="{{ $meeting->organizer_address }}">
+                                        {{ $meeting->organizer_name ?? $meeting->organizer_address ?? '-' }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)] max-w-[200px] truncate" title="{{ $meeting->subject }}">
+                                        {{ $meeting->subject ?? '-' }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-muted)] max-w-[150px] truncate" title="{{ $meeting->location }}">
+                                        @if ($meeting->is_online_meeting)
+                                            @svg('heroicon-o-video-camera', 'w-3.5 h-3.5 inline text-blue-500')
+                                        @endif
+                                        {{ $meeting->location ?? ($meeting->is_online_meeting ? 'Online' : '-') }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @switch($meeting->status)
+                                            @case('upcoming')
+                                                <x-ui-badge size="sm" variant="primary">Bevorstehend</x-ui-badge>
+                                                @break
+                                            @case('in_progress')
+                                                <x-ui-badge size="sm" variant="success" class="animate-pulse">Läuft</x-ui-badge>
+                                                @break
+                                            @case('completed')
+                                                <x-ui-badge size="sm" variant="success">Abgeschlossen</x-ui-badge>
+                                                @break
+                                            @case('cancelled')
+                                                <x-ui-badge size="sm" variant="warning">Abgesagt</x-ui-badge>
+                                                @break
+                                            @case('deleted')
+                                                <x-ui-badge size="sm" variant="danger">Gelöscht</x-ui-badge>
+                                                @break
+                                            @default
+                                                <x-ui-badge size="sm" variant="neutral">{{ $meeting->status }}</x-ui-badge>
+                                        @endswitch
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            @endif
+        </x-ui-panel>
+
+        {{-- Message Sessions --}}
+        <x-ui-panel title="Nachrichten" subtitle="Teams Chat & SMS deiner Verbindungen" wire:poll.5s>
+            @if ($messageSessions->isEmpty())
+                <p class="text-sm text-[var(--ui-muted)]">Noch keine Nachrichten erfasst.</p>
+            @else
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-[var(--ui-border)]/60">
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Zeit</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Connector</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Typ</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Richtung</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Von</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Nachricht</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-[var(--ui-border)]/40">
+                            @foreach ($messageSessions as $msg)
+                                <tr class="hover:bg-[var(--ui-bg)]">
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-muted)] whitespace-nowrap">
+                                        {{ $msg->sent_at?->format('d.m. H:i') ?? $msg->created_at->format('d.m. H:i') }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        <x-ui-badge size="sm" variant="neutral">{{ $msg->connector_key }}</x-ui-badge>
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @if ($msg->isTeamsChat())
+                                            <x-ui-badge size="sm" variant="primary">Teams</x-ui-badge>
+                                        @else
+                                            <x-ui-badge size="sm" variant="warning">SMS</x-ui-badge>
+                                        @endif
+                                    </td>
+                                    <td class="py-2 px-2 text-xs">
+                                        @if ($msg->direction === 'inbound')
+                                            <span class="text-green-600">&#8592; eingehend</span>
+                                        @elseif ($msg->direction === 'outbound')
+                                            <span class="text-blue-600">&#8594; ausgehend</span>
+                                        @else
+                                            <span class="text-[var(--ui-muted)]">-</span>
+                                        @endif
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)]">
+                                        {{ $msg->from_identifier ?? '-' }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-muted)] max-w-[300px] truncate" title="{{ $msg->body_preview }}">
+                                        {{ \Illuminate\Support\Str::limit($msg->body_preview, 80) ?? '-' }}
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            @endif
+        </x-ui-panel>
+
         {{-- Inbound Event Log --}}
         <x-ui-panel title="Event-Log" subtitle="Eingehende Webhook-Events deiner Verbindungen" wire:poll.5s>
             @if ($recentEvents->isEmpty())

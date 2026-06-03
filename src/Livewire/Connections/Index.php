@@ -8,6 +8,9 @@ use Platform\UserConnectors\Models\UserConnector;
 use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorCallSession;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
+use Platform\UserConnectors\Models\UserConnectorMailSession;
+use Platform\UserConnectors\Models\UserConnectorMeetingSession;
+use Platform\UserConnectors\Models\UserConnectorMessageSession;
 use Platform\UserConnectors\Models\UserConnectorOAuthApp;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365ConnectorService;
 use Platform\UserConnectors\Services\RingCentral\RingCentralConnectorService;
@@ -86,6 +89,65 @@ class Index extends Component
             ->recent(30)
             ->get();
 
+        // Mail sessions
+        $mailSessions = UserConnectorMailSession::query()
+            ->where(function ($q) use ($connectionIds, $connectorKeys) {
+                $q->whereIn('connection_id', $connectionIds);
+                if (!empty($connectorKeys)) {
+                    $q->orWhere(function ($q2) use ($connectorKeys) {
+                        $q2->whereNull('connection_id')
+                            ->whereIn('connector_key', $connectorKeys);
+                    });
+                }
+            })
+            ->recent(30)
+            ->get();
+
+        // Meeting sessions — auto-update status from time
+        $activeMeetings = UserConnectorMeetingSession::query()
+            ->where(function ($q) use ($connectionIds, $connectorKeys) {
+                $q->whereIn('connection_id', $connectionIds);
+                if (!empty($connectorKeys)) {
+                    $q->orWhere(function ($q2) use ($connectorKeys) {
+                        $q2->whereNull('connection_id')
+                            ->whereIn('connector_key', $connectorKeys);
+                    });
+                }
+            })
+            ->whereIn('status', ['upcoming', 'in_progress'])
+            ->get();
+
+        foreach ($activeMeetings as $meeting) {
+            $meeting->updateStatusFromTime();
+        }
+
+        $meetingSessions = UserConnectorMeetingSession::query()
+            ->where(function ($q) use ($connectionIds, $connectorKeys) {
+                $q->whereIn('connection_id', $connectionIds);
+                if (!empty($connectorKeys)) {
+                    $q->orWhere(function ($q2) use ($connectorKeys) {
+                        $q2->whereNull('connection_id')
+                            ->whereIn('connector_key', $connectorKeys);
+                    });
+                }
+            })
+            ->recent(30)
+            ->get();
+
+        // Message sessions
+        $messageSessions = UserConnectorMessageSession::query()
+            ->where(function ($q) use ($connectionIds, $connectorKeys) {
+                $q->whereIn('connection_id', $connectionIds);
+                if (!empty($connectorKeys)) {
+                    $q->orWhere(function ($q2) use ($connectorKeys) {
+                        $q2->whereNull('connection_id')
+                            ->whereIn('connector_key', $connectorKeys);
+                    });
+                }
+            })
+            ->recent(30)
+            ->get();
+
         // Inbound events for user's connections (+ unmatched events by connector key)
         $recentEvents = UserConnectorInboundEvent::query()
             ->where(function ($q) use ($connectionIds, $connectorKeys) {
@@ -106,6 +168,9 @@ class Index extends Component
             'connections' => $connections,
             'sharedWithMe' => $sharedWithMe,
             'callSessions' => $callSessions,
+            'mailSessions' => $mailSessions,
+            'meetingSessions' => $meetingSessions,
+            'messageSessions' => $messageSessions,
             'recentEvents' => $recentEvents,
         ])->layout('platform::layouts.app');
     }

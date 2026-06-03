@@ -178,6 +178,9 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $registry->register(new \Platform\UserConnectors\Tools\ListConnectionsTool());
             $registry->register(new \Platform\UserConnectors\Tools\ListEventsTool());
             $registry->register(new \Platform\UserConnectors\Tools\ListCallSessionsTool());
+            $registry->register(new \Platform\UserConnectors\Tools\ListMailSessionsTool());
+            $registry->register(new \Platform\UserConnectors\Tools\ListMeetingSessionsTool());
+            $registry->register(new \Platform\UserConnectors\Tools\ListMessageSessionsTool());
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: Query Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
         }

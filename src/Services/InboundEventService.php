@@ -10,6 +10,9 @@ use Platform\UserConnectors\Events\InboundMessageEvent;
 use Platform\UserConnectors\Models\UserConnectorCallSession;
 use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
+use Platform\UserConnectors\Models\UserConnectorMailSession;
+use Platform\UserConnectors\Models\UserConnectorMeetingSession;
+use Platform\UserConnectors\Models\UserConnectorMessageSession;
 
 class InboundEventService
 {
@@ -77,6 +80,21 @@ class InboundEventService
         // Correlate call events into sessions
         if (str_starts_with($eventType, 'call.')) {
             $this->updateCallSession($event);
+        }
+
+        // Correlate mail events into sessions
+        if (str_starts_with($eventType, 'mail.')) {
+            $this->updateMailSession($event);
+        }
+
+        // Correlate calendar events into sessions
+        if (str_starts_with($eventType, 'calendar.')) {
+            $this->updateMeetingSession($event);
+        }
+
+        // Correlate message events into sessions
+        if (str_starts_with($eventType, 'teams.') || str_starts_with($eventType, 'sms.')) {
+            $this->updateMessageSession($event);
         }
 
         $event->markProcessed();
@@ -158,6 +176,203 @@ class InboundEventService
                 'hangup_cause' => $cause,
             ]);
         }
+    }
+
+    /**
+     * Correlate mail webhook events into a MailSession.
+     */
+    protected function updateMailSession(UserConnectorInboundEvent $event): void
+    {
+        if (!$event->external_id) {
+            return;
+        }
+
+        $meta = $event->payload['meta'] ?? $event->payload ?? [];
+        $eventType = $event->event_type;
+
+        if ($eventType === 'mail.deleted') {
+            UserConnectorMailSession::where('external_mail_id', $event->external_id)->delete();
+            return;
+        }
+
+        $isRead = (bool) ($meta['isRead'] ?? false);
+
+        $data = [
+            'connection_id' => $event->connection_id,
+            'connector_key' => $event->connector_key,
+            'direction' => $event->direction ?? ($meta['direction'] ?? null),
+            'status' => $isRead ? 'read' : 'new',
+            'from_address' => $meta['from']['emailAddress']['address'] ?? $meta['fromAddress'] ?? $event->from_identifier,
+            'from_name' => $meta['from']['emailAddress']['name'] ?? $meta['fromName'] ?? null,
+            'to_addresses' => $this->extractAddressList($meta['toRecipients'] ?? $meta['toAddresses'] ?? null),
+            'cc_addresses' => $this->extractAddressList($meta['ccRecipients'] ?? $meta['ccAddresses'] ?? null),
+            'subject' => $meta['subject'] ?? null,
+            'body_preview' => $meta['bodyPreview'] ?? null,
+            'conversation_id' => $meta['conversationId'] ?? null,
+            'is_read' => $isRead,
+            'has_attachments' => (bool) ($meta['hasAttachments'] ?? false),
+            'is_draft' => (bool) ($meta['isDraft'] ?? false),
+            'shared_mailbox' => $meta['sharedMailbox'] ?? null,
+            'received_at' => isset($meta['receivedDateTime']) ? \Carbon\Carbon::parse($meta['receivedDateTime']) : $event->event_timestamp,
+            'sent_at' => isset($meta['sentDateTime']) ? \Carbon\Carbon::parse($meta['sentDateTime']) : null,
+            'meta' => $meta,
+        ];
+
+        UserConnectorMailSession::updateOrCreate(
+            ['external_mail_id' => $event->external_id],
+            $data,
+        );
+    }
+
+    /**
+     * Correlate calendar webhook events into a MeetingSession.
+     */
+    protected function updateMeetingSession(UserConnectorInboundEvent $event): void
+    {
+        if (!$event->external_id) {
+            return;
+        }
+
+        $meta = $event->payload['meta'] ?? $event->payload ?? [];
+        $eventType = $event->event_type;
+
+        if ($eventType === 'calendar.deleted') {
+            UserConnectorMeetingSession::where('external_event_id', $event->external_id)
+                ->update(['status' => 'deleted']);
+            return;
+        }
+
+        $startAt = isset($meta['start']) ? \Carbon\Carbon::parse($meta['start']) : null;
+        $endAt = isset($meta['end']) ? \Carbon\Carbon::parse($meta['end']) : null;
+
+        $durationMinutes = null;
+        if ($startAt && $endAt) {
+            $durationMinutes = (int) $startAt->diffInMinutes($endAt);
+        }
+
+        // Determine direction: outbound if user is organizer, inbound if attendee
+        $organizerAddress = $meta['organizer']['emailAddress']['address'] ?? $meta['organizerAddress'] ?? null;
+        $direction = $event->direction;
+        if (!$direction && $organizerAddress && $event->connection_id) {
+            $connection = UserConnectorConnection::find($event->connection_id);
+            if ($connection) {
+                $userEmail = $connection->credentials['profile']['mail'] ?? $connection->credentials['profile']['userPrincipalName'] ?? null;
+                if ($userEmail && strcasecmp($organizerAddress, $userEmail) === 0) {
+                    $direction = 'outbound';
+                } else {
+                    $direction = 'inbound';
+                }
+            }
+        }
+
+        // Determine status from time
+        $status = $meta['status'] ?? null;
+        if ($status === 'cancelled') {
+            $status = 'cancelled';
+        } elseif ($startAt && $endAt) {
+            $now = now();
+            if ($now->lt($startAt)) {
+                $status = 'upcoming';
+            } elseif ($now->between($startAt, $endAt)) {
+                $status = 'in_progress';
+            } else {
+                $status = 'completed';
+            }
+        } else {
+            $status = 'upcoming';
+        }
+
+        $attendees = $this->extractAddressList($meta['attendees'] ?? $meta['attendeeAddresses'] ?? null);
+
+        $data = [
+            'connection_id' => $event->connection_id,
+            'connector_key' => $event->connector_key,
+            'direction' => $direction,
+            'status' => $status,
+            'organizer_address' => $organizerAddress,
+            'organizer_name' => $meta['organizer']['emailAddress']['name'] ?? $meta['organizerName'] ?? null,
+            'attendee_addresses' => $attendees,
+            'subject' => $meta['subject'] ?? null,
+            'body_preview' => $meta['bodyPreview'] ?? null,
+            'location' => $meta['location']['displayName'] ?? $meta['location'] ?? null,
+            'is_online_meeting' => (bool) ($meta['isOnlineMeeting'] ?? false),
+            'online_meeting_url' => $meta['onlineMeetingUrl'] ?? $meta['onlineMeeting']['joinUrl'] ?? null,
+            'start_at' => $startAt,
+            'end_at' => $endAt,
+            'duration_minutes' => $durationMinutes,
+            'meta' => $meta,
+        ];
+
+        UserConnectorMeetingSession::updateOrCreate(
+            ['external_event_id' => $event->external_id],
+            $data,
+        );
+    }
+
+    /**
+     * Correlate message webhook events (Teams Chat / SMS) into a MessageSession.
+     */
+    protected function updateMessageSession(UserConnectorInboundEvent $event): void
+    {
+        if (!$event->external_id) {
+            return;
+        }
+
+        // Messages are immutable — skip if already exists
+        if (UserConnectorMessageSession::where('external_message_id', $event->external_id)->exists()) {
+            return;
+        }
+
+        $meta = $event->payload['meta'] ?? $event->payload ?? [];
+        $eventType = $event->event_type;
+
+        $messageType = str_starts_with($eventType, 'teams.') ? 'teams_chat' : 'sms';
+
+        UserConnectorMessageSession::create([
+            'connection_id' => $event->connection_id,
+            'connector_key' => $event->connector_key,
+            'external_message_id' => $event->external_id,
+            'message_type' => $messageType,
+            'direction' => $event->direction ?? ($meta['direction'] ?? null),
+            'from_identifier' => $meta['from']['user']['displayName'] ?? $meta['fromName'] ?? $event->from_identifier,
+            'from_user_id' => $meta['from']['user']['id'] ?? $meta['fromUserId'] ?? null,
+            'to_identifier' => $meta['toName'] ?? $event->to_identifier,
+            'body_preview' => $meta['body']['content'] ?? $meta['bodyPreview'] ?? null,
+            'chat_id' => $meta['chatId'] ?? null,
+            'importance' => $meta['importance'] ?? null,
+            'sent_at' => isset($meta['createdDateTime']) ? \Carbon\Carbon::parse($meta['createdDateTime']) : $event->event_timestamp,
+            'meta' => $meta,
+        ]);
+    }
+
+    /**
+     * Extract a comma-separated address list from Graph API recipients array or string.
+     */
+    protected function extractAddressList(mixed $recipients): ?string
+    {
+        if ($recipients === null) {
+            return null;
+        }
+
+        if (is_string($recipients)) {
+            return $recipients;
+        }
+
+        if (is_array($recipients)) {
+            $addresses = [];
+            foreach ($recipients as $recipient) {
+                if (is_string($recipient)) {
+                    $addresses[] = $recipient;
+                } elseif (isset($recipient['emailAddress']['address'])) {
+                    $addresses[] = $recipient['emailAddress']['address'];
+                } elseif (isset($recipient['address'])) {
+                    $addresses[] = $recipient['address'];
+                }
+            }
+            return !empty($addresses) ? implode(', ', $addresses) : null;
+        }
+
+        return null;
     }
 
     /**
