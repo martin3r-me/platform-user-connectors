@@ -119,6 +119,82 @@ class RingCentralApiService
         }
     }
 
+    /**
+     * Fetch call recording for a given session ID.
+     *
+     * @return array{content: string, mime_type: string, duration: int|null}|null
+     */
+    public function getCallRecording(UserConnectorConnection $connection, string $sessionId): ?array
+    {
+        $token = $this->connectorService->getValidAccessToken($connection);
+        if (!$token) {
+            return null;
+        }
+
+        $configKey = $this->connectorService->getConnectorKey();
+        $baseUrl = config("user-connectors.{$configKey}.api_base_url", 'https://platform.ringcentral.com/restapi/v1.0');
+        $timeout = config("user-connectors.{$configKey}.timeout.default", 30);
+
+        try {
+            $response = Http::withToken($token)
+                ->timeout($timeout)
+                ->withHeaders(['Accept' => 'application/json'])
+                ->get($baseUrl . '/account/~/extension/~/call-log', [
+                    'sessionId' => $sessionId,
+                    'view' => 'Detailed',
+                    'recordingType' => 'All',
+                ]);
+
+            if (!$response->successful()) {
+                Log::warning('RingCentral: Call-Log Abfrage fehlgeschlagen', [
+                    'session_id' => $sessionId,
+                    'status' => $response->status(),
+                ]);
+                return null;
+            }
+
+            $records = $response->json('records', []);
+            if (empty($records)) {
+                return null;
+            }
+
+            $recording = $records[0]['recording'] ?? null;
+            if (!$recording || empty($recording['contentUri'])) {
+                return null;
+            }
+
+            $contentUri = $recording['contentUri'];
+            $duration = $recording['duration'] ?? null;
+            $contentType = $recording['contentType'] ?? 'audio/mpeg';
+
+            // Download the actual recording content
+            $audioResponse = Http::withToken($token)
+                ->timeout(120)
+                ->get($contentUri);
+
+            if (!$audioResponse->successful()) {
+                Log::warning('RingCentral: Recording Download fehlgeschlagen', [
+                    'session_id' => $sessionId,
+                    'content_uri' => $contentUri,
+                    'status' => $audioResponse->status(),
+                ]);
+                return null;
+            }
+
+            return [
+                'content' => $audioResponse->body(),
+                'mime_type' => $contentType,
+                'duration' => $duration,
+            ];
+        } catch (\Exception $e) {
+            Log::error('RingCentral: Recording Fetch Fehler', [
+                'session_id' => $sessionId,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
     protected function handleResponse(Response $response, UserConnectorConnection $connection): array
     {
         $status = $response->status();

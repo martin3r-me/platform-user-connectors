@@ -6,9 +6,11 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Platform\Core\Traits\HasContextFileReferences;
 
 class UserConnectorCallSession extends Model
 {
+    use HasContextFileReferences;
     protected $table = 'user_connector_call_sessions';
 
     protected $fillable = [

@@ -156,6 +156,86 @@ class SipgateApiService
         return $this->get($user, '/voicemails');
     }
 
+    /**
+     * Fetch call recording for a given external call ID.
+     *
+     * @return array{content: string, mime_type: string, duration: int|null}|null
+     */
+    public function getCallRecording(UserConnectorConnection $connection, string $externalCallId): ?array
+    {
+        $token = $this->connectorService->getValidAccessToken($connection);
+        if (!$token) {
+            return null;
+        }
+
+        $baseUrl = config('user-connectors.sipgate.api_base_url', 'https://api.sipgate.com/v2');
+        $timeout = config('user-connectors.sipgate.timeout.default', 30);
+
+        try {
+            // Fetch history to find the recording URL
+            $response = Http::withToken($token)
+                ->timeout($timeout)
+                ->withHeaders(['Accept' => 'application/json'])
+                ->get($baseUrl . '/history', [
+                    'types' => 'CALL',
+                    'limit' => 10,
+                ]);
+
+            if (!$response->successful()) {
+                Log::warning('Sipgate: History Abfrage fehlgeschlagen', [
+                    'external_call_id' => $externalCallId,
+                    'status' => $response->status(),
+                ]);
+                return null;
+            }
+
+            $items = $response->json('items', []);
+
+            // Find the matching history entry
+            $entry = collect($items)->first(function ($item) use ($externalCallId) {
+                return ($item['callId'] ?? null) === $externalCallId
+                    || ($item['id'] ?? null) === $externalCallId;
+            });
+
+            if (!$entry) {
+                return null;
+            }
+
+            $recordingUrl = $entry['recordingUrl'] ?? null;
+            if (!$recordingUrl) {
+                return null;
+            }
+
+            $duration = $entry['duration'] ?? null;
+
+            // Download the actual recording content
+            $audioResponse = Http::withToken($token)
+                ->timeout(120)
+                ->get($recordingUrl);
+
+            if (!$audioResponse->successful()) {
+                Log::warning('Sipgate: Recording Download fehlgeschlagen', [
+                    'external_call_id' => $externalCallId,
+                    'recording_url' => $recordingUrl,
+                    'status' => $audioResponse->status(),
+                ]);
+                return null;
+            }
+
+            return [
+                'content' => $audioResponse->body(),
+                'mime_type' => 'audio/wav',
+                'duration' => $duration,
+            ];
+        } catch (\Exception $e) {
+            Log::error('Sipgate: Recording Fetch Fehler', [
+                'external_call_id' => $externalCallId,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
     // =========================================================================
     // HTTP METHODS
     // =========================================================================

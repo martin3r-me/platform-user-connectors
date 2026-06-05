@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Log;
 use Platform\UserConnectors\Events\InboundCallEvent;
 use Platform\UserConnectors\Events\InboundEventReceived;
 use Platform\UserConnectors\Events\InboundMessageEvent;
+use Platform\UserConnectors\Jobs\FetchCallRecordingJob;
 use Platform\UserConnectors\Models\UserConnectorCallSession;
 use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
@@ -172,6 +173,10 @@ class InboundEventService
                 'duration_seconds' => $duration,
                 'hangup_cause' => $cause,
             ]);
+
+            if ($status === 'completed') {
+                FetchCallRecordingJob::dispatch($session->id)->delay(now()->addSeconds(15));
+            }
         }
     }
 

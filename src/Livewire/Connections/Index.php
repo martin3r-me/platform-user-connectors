@@ -32,6 +32,7 @@ class Index extends Component
     public bool $settingsCrmCreateEngagement = false;
     public bool $settingsCrmCreateContact = false;
     public bool $settingsSubscriptionsEnabled = true;
+    public bool $settingsRecordingsEnabled = true;
 
     public function render()
     {
@@ -318,6 +319,7 @@ class Index extends Component
 
         $this->settingsConnectionId = $connectionId;
         $this->settingsSubscriptionsEnabled = $settings['subscriptions_enabled'] ?? true;
+        $this->settingsRecordingsEnabled = $settings['recordings_enabled'] ?? true;
         $this->settingsCrmCreateEngagement = $settings['crm_create_engagement'] ?? false;
         $this->settingsCrmCreateContact = $settings['crm_create_contact'] ?? false;
         $this->settingsModal = true;
@@ -339,6 +341,7 @@ class Index extends Component
         $credentials = $connection->credentials;
         $credentials['settings'] = array_merge($credentials['settings'] ?? [], [
             'subscriptions_enabled' => $this->settingsSubscriptionsEnabled,
+            'recordings_enabled' => $this->settingsRecordingsEnabled,
             'crm_create_engagement' => $this->settingsCrmCreateEngagement,
             'crm_create_contact' => $this->settingsCrmCreateContact,
         ]);
@@ -356,5 +359,6 @@ class Index extends Component
         $this->settingsCrmCreateEngagement = false;
         $this->settingsCrmCreateContact = false;
         $this->settingsSubscriptionsEnabled = true;
+        $this->settingsRecordingsEnabled = true;
     }
 }
