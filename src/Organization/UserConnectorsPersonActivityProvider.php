@@ -5,11 +5,8 @@ namespace Platform\UserConnectors\Organization;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Platform\Organization\Contracts\PersonActivityProvider;
-use Platform\UserConnectors\Models\UserConnectorCallSession;
 use Platform\UserConnectors\Models\UserConnectorConnection;
-use Platform\UserConnectors\Models\UserConnectorMailSession;
 use Platform\UserConnectors\Models\UserConnectorMeetingSession;
-use Platform\UserConnectors\Models\UserConnectorMessageSession;
 
 class UserConnectorsPersonActivityProvider implements PersonActivityProvider
 {
@@ -52,8 +49,9 @@ class UserConnectorsPersonActivityProvider implements PersonActivityProvider
         $weekAhead = $now->addDays(7);
         $monthAgo = $now->subDays(30);
 
-        // Calls: only completed/answered (duration > 0)
-        $callAgg = UserConnectorCallSession::whereIn('connection_id', $connectionIds)
+        // Calls — completed/answered only (duration > 0). DB::table to bypass Eloquent casts.
+        $callAgg = DB::table('user_connector_call_sessions')
+            ->whereIn('connection_id', $connectionIds)
             ->where('started_at', '>=', $weekAgo)
             ->whereNotNull('duration_seconds')
             ->where('duration_seconds', '>', 0)
@@ -62,8 +60,9 @@ class UserConnectorsPersonActivityProvider implements PersonActivityProvider
         $callCount = (int) ($callAgg->cnt ?? 0);
         $callMinutes = (int) round(((int) ($callAgg->secs ?? 0)) / 60);
 
-        // Meetings — past 7d (completed, excluding cancelled/deleted)
-        $meetingPastAgg = UserConnectorMeetingSession::whereIn('connection_id', $connectionIds)
+        // Meetings — past 7d (excluding cancelled/deleted)
+        $meetingPastAgg = DB::table('user_connector_meeting_sessions')
+            ->whereIn('connection_id', $connectionIds)
             ->whereNotIn('status', ['cancelled', 'deleted'])
             ->whereBetween('end_at', [$weekAgo, $now])
             ->selectRaw('COUNT(*) AS cnt, COALESCE(SUM(duration_minutes), 0) AS mins')
@@ -72,7 +71,8 @@ class UserConnectorsPersonActivityProvider implements PersonActivityProvider
         $meetingPastMinutes = (int) ($meetingPastAgg->mins ?? 0);
 
         // Meetings — upcoming 7d
-        $meetingUpcomingAgg = UserConnectorMeetingSession::whereIn('connection_id', $connectionIds)
+        $meetingUpcomingAgg = DB::table('user_connector_meeting_sessions')
+            ->whereIn('connection_id', $connectionIds)
             ->whereIn('status', ['upcoming', 'in_progress'])
             ->whereBetween('start_at', [$now, $weekAhead])
             ->selectRaw('COUNT(*) AS cnt, COALESCE(SUM(duration_minutes), 0) AS mins')
@@ -80,12 +80,14 @@ class UserConnectorsPersonActivityProvider implements PersonActivityProvider
         $meetingUpcomingCount = (int) ($meetingUpcomingAgg->cnt ?? 0);
         $meetingUpcomingMinutes = (int) ($meetingUpcomingAgg->mins ?? 0);
 
-        $mailsSent = UserConnectorMailSession::whereIn('connection_id', $connectionIds)
+        $mailsSent = (int) DB::table('user_connector_mail_sessions')
+            ->whereIn('connection_id', $connectionIds)
             ->where('direction', 'outbound')
             ->where('sent_at', '>=', $weekAgo)
             ->count();
 
-        $messagesSent = UserConnectorMessageSession::whereIn('connection_id', $connectionIds)
+        $messagesSent = (int) DB::table('user_connector_message_sessions')
+            ->whereIn('connection_id', $connectionIds)
             ->where('direction', 'outbound')
             ->where('sent_at', '>=', $weekAgo)
             ->count();
@@ -190,83 +192,79 @@ class UserConnectorsPersonActivityProvider implements PersonActivityProvider
     {
         $contacts = [];
 
-        // Calls — andere Nummer abhängig von direction
-        UserConnectorCallSession::whereIn('connection_id', $connectionIds)
+        // Calls — Gegenseite je nach direction
+        foreach (DB::table('user_connector_call_sessions')
+            ->whereIn('connection_id', $connectionIds)
             ->where('started_at', '>=', $since)
             ->select(['direction', 'from_number', 'to_number'])
-            ->chunkById(500, function ($rows) use (&$contacts) {
-                foreach ($rows as $row) {
-                    $value = $row->direction === 'inbound' ? $row->from_number : $row->to_number;
-                    $normalized = $this->normalizePhone($value);
-                    if ($normalized !== null) {
-                        $contacts['phone:' . $normalized] = true;
-                    }
-                }
-            });
+            ->cursor() as $row) {
+            $value = $row->direction === 'inbound' ? $row->from_number : $row->to_number;
+            $normalized = $this->normalizePhone($value);
+            if ($normalized !== null) {
+                $contacts['phone:' . $normalized] = true;
+            }
+        }
 
         // Mails
-        UserConnectorMailSession::whereIn('connection_id', $connectionIds)
+        foreach (DB::table('user_connector_mail_sessions')
+            ->whereIn('connection_id', $connectionIds)
             ->where(function ($q) use ($since) {
                 $q->where('received_at', '>=', $since)->orWhere('sent_at', '>=', $since);
             })
             ->select(['direction', 'from_address', 'to_addresses'])
-            ->chunkById(500, function ($rows) use (&$contacts) {
-                foreach ($rows as $row) {
-                    if ($row->direction === 'inbound') {
-                        $normalized = $this->normalizeEmail($row->from_address);
-                        if ($normalized !== null) {
-                            $contacts['email:' . $normalized] = true;
-                        }
-                    } else {
-                        foreach ($this->splitAddresses($row->to_addresses) as $addr) {
-                            $normalized = $this->normalizeEmail($addr);
-                            if ($normalized !== null) {
-                                $contacts['email:' . $normalized] = true;
-                            }
-                        }
-                    }
+            ->cursor() as $row) {
+            if ($row->direction === 'inbound') {
+                $normalized = $this->normalizeEmail($row->from_address);
+                if ($normalized !== null) {
+                    $contacts['email:' . $normalized] = true;
                 }
-            });
-
-        // Meetings — Organizer + Attendees
-        UserConnectorMeetingSession::whereIn('connection_id', $connectionIds)
-            ->where('start_at', '>=', $since)
-            ->whereNotIn('status', ['cancelled', 'deleted'])
-            ->select(['organizer_address', 'attendee_addresses'])
-            ->chunkById(500, function ($rows) use (&$contacts) {
-                foreach ($rows as $row) {
-                    $normalized = $this->normalizeEmail($row->organizer_address);
+            } else {
+                foreach ($this->splitAddresses($row->to_addresses) as $addr) {
+                    $normalized = $this->normalizeEmail($addr);
                     if ($normalized !== null) {
                         $contacts['email:' . $normalized] = true;
                     }
-                    foreach ($this->splitAddresses($row->attendee_addresses) as $addr) {
-                        $normalized = $this->normalizeEmail($addr);
-                        if ($normalized !== null) {
-                            $contacts['email:' . $normalized] = true;
-                        }
-                    }
                 }
-            });
+            }
+        }
+
+        // Meetings — Organizer + Attendees
+        foreach (DB::table('user_connector_meeting_sessions')
+            ->whereIn('connection_id', $connectionIds)
+            ->where('start_at', '>=', $since)
+            ->whereNotIn('status', ['cancelled', 'deleted'])
+            ->select(['organizer_address', 'attendee_addresses'])
+            ->cursor() as $row) {
+            $normalized = $this->normalizeEmail($row->organizer_address);
+            if ($normalized !== null) {
+                $contacts['email:' . $normalized] = true;
+            }
+            foreach ($this->splitAddresses($row->attendee_addresses) as $addr) {
+                $normalized = $this->normalizeEmail($addr);
+                if ($normalized !== null) {
+                    $contacts['email:' . $normalized] = true;
+                }
+            }
+        }
 
         // Messages — Teams / SMS
-        UserConnectorMessageSession::whereIn('connection_id', $connectionIds)
+        foreach (DB::table('user_connector_message_sessions')
+            ->whereIn('connection_id', $connectionIds)
             ->where('sent_at', '>=', $since)
             ->select(['direction', 'message_type', 'from_identifier', 'to_identifier'])
-            ->chunkById(500, function ($rows) use (&$contacts) {
-                foreach ($rows as $row) {
-                    $value = $row->direction === 'inbound' ? $row->from_identifier : $row->to_identifier;
-                    if ($value === null || $value === '') {
-                        continue;
-                    }
-                    $prefix = $row->message_type === 'sms' ? 'phone:' : 'msg:';
-                    $normalized = $row->message_type === 'sms'
-                        ? $this->normalizePhone($value)
-                        : strtolower(trim($value));
-                    if ($normalized !== null && $normalized !== '') {
-                        $contacts[$prefix . $normalized] = true;
-                    }
-                }
-            });
+            ->cursor() as $row) {
+            $value = $row->direction === 'inbound' ? $row->from_identifier : $row->to_identifier;
+            if ($value === null || $value === '') {
+                continue;
+            }
+            $prefix = $row->message_type === 'sms' ? 'phone:' : 'msg:';
+            $normalized = $row->message_type === 'sms'
+                ? $this->normalizePhone($value)
+                : strtolower(trim((string) $value));
+            if ($normalized !== null && $normalized !== '') {
+                $contacts[$prefix . $normalized] = true;
+            }
+        }
 
         return count($contacts);
     }
