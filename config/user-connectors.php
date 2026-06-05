@@ -88,7 +88,10 @@ return [
             ],
         ],
         'call_records' => [
-            'enabled' => false, // Requires tenant_id in OAuthApp settings + CallRecords.Read.All (Application Permission)
+            'enabled' => true, // Requires tenant_id in OAuthApp settings + CallRecords.Read.All (Application Permission)
+            'resources' => [
+                ['resource' => 'communications/callRecords', 'changeType' => 'created'],
+            ],
         ],
     ],
 

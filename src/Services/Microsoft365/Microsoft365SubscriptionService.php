@@ -261,6 +261,53 @@ class Microsoft365SubscriptionService implements SubscribableConnector
             ]);
         }
 
+        // CallRecords subscriptions (separate webhook endpoint)
+        if (config('user-connectors.microsoft365.call_records.enabled', false)) {
+            $callRecordResources = config('user-connectors.microsoft365.call_records.resources', []);
+            $callRecordsWebhookUrl = route('user-connectors.webhooks.microsoft365.call-records');
+
+            foreach ($callRecordResources as $res) {
+                $clientState = Str::random(40);
+
+                $response = Http::withToken($appToken)
+                    ->timeout(30)
+                    ->post($baseUrl . '/subscriptions', [
+                        'changeType' => $res['changeType'],
+                        'notificationUrl' => $callRecordsWebhookUrl,
+                        'resource' => $res['resource'],
+                        'expirationDateTime' => $expirationDateTime,
+                        'clientState' => $clientState,
+                    ]);
+
+                if (!$response->successful()) {
+                    Log::warning('MS365: CallRecords Subscription fehlgeschlagen', [
+                        'connection_id' => $connection->id,
+                        'resource' => $res['resource'],
+                        'status' => $response->status(),
+                        'body' => mb_substr($response->body(), 0, 500),
+                    ]);
+                    continue;
+                }
+
+                $data = $response->json();
+
+                $subscriptions[] = [
+                    'id' => $data['id'],
+                    'resource' => $res['resource'],
+                    'change_types' => $res['changeType'],
+                    'expires_at' => \Carbon\Carbon::parse($data['expirationDateTime'])->timestamp,
+                    'client_state' => $clientState,
+                    'app_level' => true,
+                ];
+
+                Log::info('MS365: CallRecords Subscription erstellt', [
+                    'connection_id' => $connection->id,
+                    'subscription_id' => $data['id'],
+                    'resource' => $res['resource'],
+                ]);
+            }
+        }
+
         return $subscriptions;
     }
 

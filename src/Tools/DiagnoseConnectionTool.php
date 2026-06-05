@@ -20,7 +20,7 @@ class DiagnoseConnectionTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Diagnose einer Connector-Verbindung. Prüft Token-Gültigkeit, Graph-API-Zugang, Subscription-Status, App-Permissions und Teams-Zugang. Kann auch eine Teams-Subscription erstellen (action: create_teams_subscription).';
+        return 'Diagnose einer Connector-Verbindung. Prüft Token-Gültigkeit, Graph-API-Zugang, Subscription-Status, App-Permissions und Teams-Zugang. Kann auch Subscriptions erstellen (action: create_teams_subscription oder create_call_records_subscription).';
     }
 
     public function getSchema(): array
@@ -29,7 +29,7 @@ class DiagnoseConnectionTool implements ToolContract, ToolMetadataContract
             'type' => 'object',
             'properties' => [
                 'connection_id' => ['type' => 'integer', 'description' => 'Connection ID. Wenn nicht angegeben, wird die Default-MS365-Connection genutzt.'],
-                'action' => ['type' => 'string', 'description' => 'Optional: "create_teams_subscription" um die Teams-Subscription manuell zu erstellen. Default: Diagnose-Report.'],
+                'action' => ['type' => 'string', 'description' => 'Optional: "create_teams_subscription" oder "create_call_records_subscription" um Subscriptions manuell zu erstellen. Default: Diagnose-Report.'],
             ],
             'required' => [],
         ];
@@ -64,6 +64,10 @@ class DiagnoseConnectionTool implements ToolContract, ToolMetadataContract
 
             if ($action === 'create_teams_subscription') {
                 return $this->createTeamsSubscription($connection);
+            }
+
+            if ($action === 'create_call_records_subscription') {
+                return $this->createCallRecordsSubscription($connection);
             }
 
             return $this->diagnose($connection);
@@ -117,6 +121,10 @@ class DiagnoseConnectionTool implements ToolContract, ToolMetadataContract
 
         $report['has_teams_subscription'] = collect($subs)->contains(fn ($s) =>
             str_contains(strtolower($s['resource'] ?? ''), 'chat')
+        );
+
+        $report['has_call_records_subscription'] = collect($subs)->contains(fn ($s) =>
+            str_contains(strtolower($s['resource'] ?? ''), 'callrecords')
         );
 
         // OAuthApp settings
@@ -191,6 +199,7 @@ class DiagnoseConnectionTool implements ToolContract, ToolMetadataContract
         $report['config'] = [
             'resources' => config('user-connectors.microsoft365.subscriptions.resources', []),
             'app_resources' => config('user-connectors.microsoft365.subscriptions.app_resources', []),
+            'call_records' => config('user-connectors.microsoft365.call_records', []),
         ];
 
         return ToolResult::success($report);
@@ -219,6 +228,81 @@ class DiagnoseConnectionTool implements ToolContract, ToolMetadataContract
         $results = [];
 
         foreach ($appResources as $res) {
+            $clientState = \Illuminate\Support\Str::random(40);
+
+            $payload = [
+                'changeType' => $res['changeType'],
+                'notificationUrl' => $webhookUrl,
+                'resource' => $res['resource'],
+                'expirationDateTime' => now()->addHour()->toIso8601String(),
+                'clientState' => $clientState,
+            ];
+
+            $response = Http::withToken($appToken)
+                ->timeout(30)
+                ->post("{$baseUrl}/subscriptions", $payload);
+
+            $result = [
+                'resource' => $res['resource'],
+                'request_payload' => $payload,
+                'status' => $response->status(),
+                'ok' => $response->successful(),
+                'response' => $response->successful()
+                    ? $response->json()
+                    : json_decode($response->body(), true) ?? $response->body(),
+            ];
+
+            if ($response->successful()) {
+                // Persist to connection credentials
+                $credentials = $connection->credentials;
+                $subs = $credentials['subscriptions'] ?? [];
+                $subs[] = [
+                    'id' => $response->json('id'),
+                    'resource' => $res['resource'],
+                    'change_types' => $res['changeType'],
+                    'expires_at' => \Carbon\Carbon::parse($response->json('expirationDateTime'))->timestamp,
+                    'client_state' => $clientState,
+                    'app_level' => true,
+                ];
+                $credentials['subscriptions'] = $subs;
+                $connection->credentials = $credentials;
+                $connection->save();
+
+                $result['saved'] = true;
+            }
+
+            $results[] = $result;
+        }
+
+        return ToolResult::success([
+            'connection_id' => $connection->id,
+            'results' => $results,
+        ]);
+    }
+
+    protected function createCallRecordsSubscription(UserConnectorConnection $connection): ToolResult
+    {
+        $oauthApp = $connection->oauthApp;
+        if (!$oauthApp || empty($oauthApp->settings['tenant_id'])) {
+            return ToolResult::error('CONFIG_ERROR', 'OAuthApp hat keine tenant_id konfiguriert. Benötigt für CallRecords Subscriptions.');
+        }
+
+        $appToken = app(Microsoft365AppTokenService::class)->getAppToken($oauthApp);
+        if (!$appToken) {
+            return ToolResult::error('TOKEN_ERROR', 'Kein App-Token verfügbar. Prüfe client_id/client_secret/tenant_id.');
+        }
+
+        $callRecordResources = config('user-connectors.microsoft365.call_records.resources', []);
+        if (empty($callRecordResources)) {
+            return ToolResult::error('CONFIG_ERROR', 'Keine call_records.resources in Config definiert.');
+        }
+
+        $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
+        $webhookUrl = route('user-connectors.webhooks.microsoft365.call-records');
+
+        $results = [];
+
+        foreach ($callRecordResources as $res) {
             $clientState = \Illuminate\Support\Str::random(40);
 
             $payload = [
