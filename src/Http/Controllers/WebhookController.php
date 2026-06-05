@@ -453,16 +453,23 @@ class WebhookController extends Controller
         $caller = $firstSession['caller'] ?? $record['organizer'] ?? [];
         $callee = $firstSession['callee'] ?? [];
 
-        $fromDisplay = $caller['user']['displayName']
+        // Graph session endpoints use identity.user, top-level organizer uses user directly
+        $fromDisplay = $caller['identity']['user']['displayName']
+            ?? $caller['user']['displayName']
+            ?? $caller['identity']['phone']['displayName']
             ?? $caller['phone']['displayName']
             ?? $caller['phone']['id']
             ?? null;
-        $toDisplay = $callee['user']['displayName']
+        $toDisplay = $callee['identity']['user']['displayName']
+            ?? $callee['user']['displayName']
+            ?? $callee['identity']['phone']['displayName']
             ?? $callee['phone']['displayName']
             ?? $callee['phone']['id']
             ?? null;
 
-        $callerUserId = $caller['user']['id'] ?? null;
+        $callerUserId = $caller['identity']['user']['id']
+            ?? $caller['user']['id']
+            ?? null;
 
         foreach ($connections as $connection) {
             $userMs365Id = $connection->credentials['ms365_user_id'] ?? null;
@@ -486,6 +493,10 @@ class WebhookController extends Controller
                     'callType' => $type,
                     'modalities' => $record['modalities'] ?? [],
                     'sessionCount' => count($sessions),
+                    'organizer' => $record['organizer']['user']['displayName'] ?? null,
+                    'participants' => collect($record['participants'] ?? [])
+                        ->map(fn ($p) => $p['user']['displayName'] ?? $p['identity']['user']['displayName'] ?? null)
+                        ->filter()->values()->all(),
                 ],
             ]);
 
@@ -514,20 +525,20 @@ class WebhookController extends Controller
             }
         }
 
-        // From sessions caller/callee
+        // From sessions caller/callee (Graph uses identity.user for session endpoints)
         foreach ($record['sessions'] ?? [] as $session) {
-            if ($userId = ($session['caller']['user']['id'] ?? null)) {
+            if ($userId = ($session['caller']['identity']['user']['id'] ?? $session['caller']['user']['id'] ?? null)) {
                 $ids[] = $userId;
             }
-            if ($userId = ($session['callee']['user']['id'] ?? null)) {
+            if ($userId = ($session['callee']['identity']['user']['id'] ?? $session['callee']['user']['id'] ?? null)) {
                 $ids[] = $userId;
             }
             // From segments
             foreach ($session['segments'] ?? [] as $segment) {
-                if ($userId = ($segment['caller']['user']['id'] ?? null)) {
+                if ($userId = ($segment['caller']['identity']['user']['id'] ?? $segment['caller']['user']['id'] ?? null)) {
                     $ids[] = $userId;
                 }
-                if ($userId = ($segment['callee']['user']['id'] ?? null)) {
+                if ($userId = ($segment['callee']['identity']['user']['id'] ?? $segment['callee']['user']['id'] ?? null)) {
                     $ids[] = $userId;
                 }
             }
