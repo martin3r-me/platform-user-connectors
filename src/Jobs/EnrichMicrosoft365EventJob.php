@@ -132,6 +132,12 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
                     'event_type' => $eventType,
                     'resource' => $resourcePath,
                 ]);
+
+                // For Teams events from app-level subscriptions: if enrichment failed,
+                // delete the event to avoid empty rows in the log
+                if (str_starts_with($eventType, 'teams.') && $isAppLevel) {
+                    $event->delete();
+                }
             }
         } catch (\Exception $e) {
             Log::error('MS365 Enrichment fehlgeschlagen', [
@@ -510,12 +516,21 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             ));
 
         if ($connections->isEmpty()) {
-            $this->correlateSession($originalEvent);
+            // No active connection is involved in this chat — delete the event
+            // to keep logs clean (app-level subscription sees all tenant messages)
+            Log::debug('MS365 Fan-Out: Keine Connection beteiligt, Event wird gelöscht', [
+                'event_id' => $originalEvent->id,
+                'memberUserIds' => $memberUserIds,
+            ]);
+            $originalEvent->delete();
 
             return;
         }
 
         $service = app(InboundEventService::class);
+
+        // Check if the original event's connection is actually involved in this chat
+        $originalConnectionInvolved = $connections->contains('id', $originalEvent->connection_id);
 
         foreach ($connections as $connection) {
             $isOriginalConnection = $connection->id === $originalEvent->connection_id;
@@ -544,6 +559,16 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
                 ]);
                 $service->updateMessageSession($fanOutEvent);
             }
+        }
+
+        // If the original connection wasn't involved in the chat, delete the orphaned event
+        // (fan-out already created dedicated events for the actual participants)
+        if (!$originalConnectionInvolved) {
+            Log::debug('MS365 Fan-Out: Original-Connection nicht im Chat, Event wird gelöscht', [
+                'event_id' => $originalEvent->id,
+                'connection_id' => $originalEvent->connection_id,
+            ]);
+            $originalEvent->delete();
         }
     }
 
