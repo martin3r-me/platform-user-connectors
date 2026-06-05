@@ -194,6 +194,16 @@ class UserConnectorsServiceProvider extends ServiceProvider
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: Query Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
         }
+
+        try {
+            $registry = resolve(\Platform\Core\Tools\ToolRegistry::class);
+
+            // Debug Tools — Snapshot pipeline diagnostics
+            $registry->register(new \Platform\UserConnectors\Tools\DebugPersonVitalSignsTool());
+            $registry->register(new \Platform\UserConnectors\Tools\RunSnapshotDebugTool());
+        } catch (\Throwable $e) {
+            \Log::warning('UserConnectors: Debug Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
+        }
     }
 
     protected function registerLivewireComponents(): void
