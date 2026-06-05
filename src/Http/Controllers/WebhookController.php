@@ -427,7 +427,22 @@ class WebhookController extends Controller
             ? $startDateTime->diffInSeconds($endDateTime)
             : null;
 
-        $status = ($durationSeconds !== null && $durationSeconds === 0) ? 'missed' : 'completed';
+        // Determine status from session failureInfo (Graph provides reason + stage)
+        $sessions = $record['sessions'] ?? [];
+        $firstSession = $sessions[0] ?? [];
+        $failureInfo = $firstSession['failureInfo'] ?? null;
+        $failureReason = strtolower($failureInfo['reason'] ?? '');
+        $hangupCause = $failureInfo['reason'] ?? null;
+
+        $status = match (true) {
+            str_contains($failureReason, 'busy') => 'busy',
+            str_contains($failureReason, 'decline') => 'cancelled',
+            str_contains($failureReason, 'noanswer') || str_contains($failureReason, 'no answer') => 'missed',
+            str_contains($failureReason, 'unavailable') || str_contains($failureReason, 'unreachable') => 'failed',
+            $failureReason !== '' => 'failed',
+            $durationSeconds !== null && $durationSeconds === 0 => 'missed',
+            default => 'completed',
+        };
 
         // Collect all participant user IDs from the call record
         $participantUserIds = $this->extractParticipantUserIds($record);
@@ -447,9 +462,7 @@ class WebhookController extends Controller
             return;
         }
 
-        // Extract caller/callee from sessions
-        $sessions = $record['sessions'] ?? [];
-        $firstSession = $sessions[0] ?? [];
+        // Extract caller/callee from sessions (reuse $sessions/$firstSession from above)
         $caller = $firstSession['caller'] ?? $record['organizer'] ?? [];
         $callee = $firstSession['callee'] ?? [];
 
@@ -488,11 +501,13 @@ class WebhookController extends Controller
                 'started_at' => $startDateTime,
                 'answered_at' => $status === 'completed' ? $startDateTime : null,
                 'ended_at' => $endDateTime,
-                'duration_seconds' => $durationSeconds,
+                'duration_seconds' => $status === 'completed' ? $durationSeconds : null,
+                'hangup_cause' => $hangupCause,
                 'meta' => [
                     'callType' => $type,
                     'modalities' => $record['modalities'] ?? [],
                     'sessionCount' => count($sessions),
+                    'failureInfo' => $failureInfo,
                     'organizer' => $record['organizer']['user']['displayName'] ?? null,
                     'participants' => collect($record['participants'] ?? [])
                         ->map(fn ($p) => $p['user']['displayName'] ?? $p['identity']['user']['displayName'] ?? null)
