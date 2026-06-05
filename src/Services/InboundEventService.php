@@ -322,8 +322,11 @@ class InboundEventService
             return;
         }
 
-        // Messages are immutable — skip if already exists
-        if (UserConnectorMessageSession::where('external_message_id', $event->external_id)->exists()) {
+        // Messages are immutable — skip if already exists for this connection
+        if (UserConnectorMessageSession::where('external_message_id', $event->external_id)
+            ->where('connection_id', $event->connection_id)
+            ->exists()
+        ) {
             return;
         }
 
@@ -341,7 +344,7 @@ class InboundEventService
             'direction' => $event->direction,
             'from_identifier' => $meta['fromDisplayName'] ?? $event->from_identifier,
             'from_user_id' => $meta['fromUserId'] ?? null,
-            'to_identifier' => $event->to_identifier,
+            'to_identifier' => $meta['toNames'] ?? $event->to_identifier,
             'body_preview' => $meta['bodyPreview'] ?? null,
             'chat_id' => $meta['chatId'] ?? null,
             'importance' => $meta['importance'] ?? null,

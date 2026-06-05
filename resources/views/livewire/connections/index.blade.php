@@ -447,6 +447,7 @@
                                 <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Typ</th>
                                 <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Richtung</th>
                                 <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Von</th>
+                                <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">An</th>
                                 <th class="text-left py-2 px-2 text-xs font-medium text-[var(--ui-muted)]">Nachricht</th>
                             </tr>
                         </thead>
@@ -477,6 +478,9 @@
                                     </td>
                                     <td class="py-2 px-2 text-xs text-[var(--ui-secondary)]">
                                         {{ $msg->from_identifier ?? '-' }}
+                                    </td>
+                                    <td class="py-2 px-2 text-xs text-[var(--ui-secondary)] max-w-[150px] truncate" title="{{ $msg->to_identifier }}">
+                                        {{ $msg->to_identifier ?? '-' }}
                                     </td>
                                     <td class="py-2 px-2 text-xs text-[var(--ui-muted)] max-w-[300px] truncate" title="{{ $msg->body_preview }}">
                                         {{ \Illuminate\Support\Str::limit($msg->body_preview, 80) ?? '-' }}

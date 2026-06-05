@@ -9,6 +9,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
 use Platform\UserConnectors\Services\InboundEventService;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365AppTokenService;
@@ -119,8 +120,12 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
                     'shared_mailbox' => $meta['sharedMailbox'] ?? null,
                 ]);
 
-                // Correlate enriched event into session (now that meta + external_id are populated)
-                $this->correlateSession($event);
+                // Fan-out Teams messages to all chat participants, or correlate normally
+                if (str_starts_with($eventType, 'teams.') && !empty($enriched['meta']['memberUserIds'])) {
+                    $this->fanOutTeamsMessageToUsers($event, $enriched);
+                } else {
+                    $this->correlateSession($event);
+                }
             } else {
                 Log::debug('MS365 Enrichment: Keine Daten zurückgegeben', [
                     'event_id' => $event->id,
@@ -332,9 +337,33 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
         // Direction: if sender matches the connection user, it's outbound
         $direction = ($ms365UserId && $fromUserId === $ms365UserId) ? 'outbound' : 'inbound';
 
+        // Fetch chat members for "An" field and fan-out
+        $members = [];
+        if ($chatId) {
+            $membersUrl = "{$baseUrl}/chats/{$chatId}/members";
+            $membersResponse = Http::withToken($token)->timeout(15)->get($membersUrl);
+            $members = $membersResponse->successful() ? $membersResponse->json('value', []) : [];
+        }
+
+        // "An" = all member display names except the sender
+        $toNames = collect($members)
+            ->filter(fn ($m) => ($m['userId'] ?? null) !== $fromUserId)
+            ->map(fn ($m) => $m['displayName'] ?? $m['email'] ?? null)
+            ->filter()->values()->implode(', ');
+
+        // Member user IDs for fan-out
+        $memberUserIds = collect($members)
+            ->pluck('userId')
+            ->filter()->values()->all();
+
+        $memberNames = collect($members)
+            ->map(fn ($m) => ['userId' => $m['userId'] ?? null, 'displayName' => $m['displayName'] ?? null])
+            ->filter(fn ($m) => $m['userId'])
+            ->values()->all();
+
         return [
             'from' => $from,
-            'to' => null, // Chat messages don't have a single "to"
+            'to' => $toNames ?: null,
             'external_id' => $data['id'] ?? null,
             'direction' => $direction,
             'event_timestamp' => $timestamp ? \Carbon\Carbon::parse($timestamp) : null,
@@ -345,6 +374,9 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
                 'importance' => $data['importance'] ?? null,
                 'fromUserId' => $fromUserId,
                 'fromDisplayName' => $from,
+                'toNames' => $toNames ?: null,
+                'memberUserIds' => $memberUserIds,
+                'memberNames' => $memberNames,
             ],
         ];
     }
@@ -447,6 +479,72 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
         $last = end($segments);
 
         return $last ?: null;
+    }
+
+    /**
+     * Fan out a Teams message to all chat participants that have an active MS365 connection.
+     * Creates a separate InboundEvent per connection so each user sees the message in their log.
+     */
+    protected function fanOutTeamsMessageToUsers(
+        UserConnectorInboundEvent $originalEvent,
+        array $enriched,
+    ): void {
+        $memberUserIds = $enriched['meta']['memberUserIds'] ?? [];
+        if (empty($memberUserIds)) {
+            $this->correlateSession($originalEvent);
+
+            return;
+        }
+
+        $fromUserId = $enriched['meta']['fromUserId'] ?? null;
+
+        // Find all active MS365 connections whose ms365_user_id is in the member list
+        $connections = UserConnectorConnection::query()
+            ->whereHas('connector', fn ($q) => $q->where('key', 'microsoft365'))
+            ->where('status', 'active')
+            ->get()
+            ->filter(fn ($conn) => in_array(
+                $conn->credentials['ms365_user_id'] ?? null,
+                $memberUserIds,
+                true,
+            ));
+
+        if ($connections->isEmpty()) {
+            $this->correlateSession($originalEvent);
+
+            return;
+        }
+
+        $service = app(InboundEventService::class);
+
+        foreach ($connections as $connection) {
+            $isOriginalConnection = $connection->id === $originalEvent->connection_id;
+            $connMs365UserId = $connection->credentials['ms365_user_id'] ?? null;
+            $direction = ($fromUserId && $connMs365UserId === $fromUserId) ? 'outbound' : 'inbound';
+
+            if ($isOriginalConnection) {
+                // Original event: correct direction + correlate session
+                $originalEvent->update(['direction' => $direction]);
+                $service->updateMessageSession($originalEvent);
+            } else {
+                // Create a new event for this connection
+                $fanOutEvent = UserConnectorInboundEvent::create([
+                    'connection_id' => $connection->id,
+                    'connector_key' => 'microsoft365',
+                    'event_type' => $originalEvent->event_type,
+                    'direction' => $direction,
+                    'external_id' => $originalEvent->external_id,
+                    'idempotency_key' => $originalEvent->idempotency_key . ':fan:' . $connection->id,
+                    'from_identifier' => $originalEvent->from_identifier,
+                    'to_identifier' => $originalEvent->to_identifier,
+                    'payload' => $originalEvent->payload,
+                    'processing_status' => 'processed',
+                    'event_timestamp' => $originalEvent->event_timestamp,
+                    'meta' => $originalEvent->meta,
+                ]);
+                $service->updateMessageSession($fanOutEvent);
+            }
+        }
     }
 
     /**
