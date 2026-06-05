@@ -95,20 +95,20 @@ class UserConnectorsPersonActivityProvider implements PersonActivityProvider
         return [
             [
                 'key' => 'call_minutes_7d',
-                'label' => 'Telefon 7d' . ($callCount > 0 ? " ({$callCount})" : ''),
-                'value' => $this->formatMinutes($callMinutes),
+                'label' => 'Telefon-Min 7d' . ($callCount > 0 ? " ({$callCount}×)" : ''),
+                'value' => $callMinutes,
                 'variant' => 'default',
             ],
             [
                 'key' => 'meeting_minutes_past_7d',
-                'label' => 'Meetings 7d' . ($meetingPastCount > 0 ? " ({$meetingPastCount})" : ''),
-                'value' => $this->formatMinutes($meetingPastMinutes),
+                'label' => 'Meeting-Min 7d' . ($meetingPastCount > 0 ? " ({$meetingPastCount}×)" : ''),
+                'value' => $meetingPastMinutes,
                 'variant' => 'default',
             ],
             [
                 'key' => 'meeting_minutes_upcoming_7d',
-                'label' => 'Kommend 7d' . ($meetingUpcomingCount > 0 ? " ({$meetingUpcomingCount})" : ''),
-                'value' => $this->formatMinutes($meetingUpcomingMinutes),
+                'label' => 'Kommend Min 7d' . ($meetingUpcomingCount > 0 ? " ({$meetingUpcomingCount}×)" : ''),
+                'value' => $meetingUpcomingMinutes,
                 'variant' => 'default',
             ],
             [
