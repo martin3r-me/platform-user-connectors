@@ -116,6 +116,14 @@ class UserConnectorsServiceProvider extends ServiceProvider
         // LLM Tools
         $this->registerTools();
 
+        // PersonActivityProvider registrieren (loose Kopplung mit Organization-Modul)
+        try {
+            resolve(\Platform\Organization\Services\PersonActivityRegistry::class)
+                ->register(new \Platform\UserConnectors\Organization\UserConnectorsPersonActivityProvider());
+        } catch (\Throwable $e) {
+            // Organization-Modul nicht geladen
+        }
+
         // Config publish
         $this->publishes([
             __DIR__ . '/../config/user-connectors.php' => config_path('user-connectors.php'),
