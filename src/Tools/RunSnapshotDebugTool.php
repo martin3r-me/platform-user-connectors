@@ -2,10 +2,11 @@
 
 namespace Platform\UserConnectors\Tools;
 
-use Illuminate\Support\Facades\Artisan;
 use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
 use Platform\Core\Contracts\ToolResult;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
 
 class RunSnapshotDebugTool implements ToolContract
 {
@@ -16,7 +17,7 @@ class RunSnapshotDebugTool implements ToolContract
 
     public function getDescription(): string
     {
-        return 'Debug: triggert organization:snapshot-entities und liefert Exit-Code, Artisan-Output und bei Fehler die ganze Exception-Chain (Class + Message + File:Line + Trace) — auch verschachtelte previous Throwables.';
+        return 'Debug: führt SnapshotEntitiesCommand direkt aus (auch im HTTP/MCP-Kontext, wo Artisan::call den Command sonst nicht findet) und liefert Exit-Code, Output und bei Fehler die ganze Exception-Chain (Class + Message + File:Line + Trace).';
     }
 
     public function getSchema(): array
@@ -27,8 +28,8 @@ class RunSnapshotDebugTool implements ToolContract
                 'period' => [
                     'type' => 'string',
                     'enum' => ['morning', 'evening', 'auto'],
-                    'description' => 'Snapshot-Periode (default: auto).',
-                    'default' => 'auto',
+                    'description' => 'Snapshot-Periode (default: evening).',
+                    'default' => 'evening',
                 ],
             ],
             'required' => [],
@@ -37,15 +38,29 @@ class RunSnapshotDebugTool implements ToolContract
 
     public function execute(array $arguments, ToolContext $context): ToolResult
     {
-        $period = $arguments['period'] ?? 'auto';
+        $period = $arguments['period'] ?? 'evening';
+
+        $commandClass = '\\Platform\\Organization\\Console\\Commands\\SnapshotEntitiesCommand';
+
+        if (!class_exists($commandClass)) {
+            return ToolResult::error('NOT_AVAILABLE', "Organization-Modul oder {$commandClass} nicht geladen.");
+        }
 
         try {
-            $exitCode = Artisan::call('organization:snapshot-entities', ['--period' => $period]);
-            $output = Artisan::output();
+            $app = app();
+            $command = $app->make($commandClass);
+
+            if (method_exists($command, 'setLaravel')) {
+                $command->setLaravel($app);
+            }
+
+            $input = new ArrayInput(['--period' => $period]);
+            $output = new BufferedOutput();
+            $exitCode = $command->run($input, $output);
 
             return ToolResult::success([
                 'exit_code' => $exitCode,
-                'output' => $output,
+                'output' => $output->fetch(),
             ]);
         } catch (\Throwable $e) {
             $causes = [];
