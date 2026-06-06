@@ -22,6 +22,7 @@ class UserConnectorInboundEvent extends Model
         'meta',
         'processing_status',
         'processing_error',
+        'session_correlated_at',
         'event_timestamp',
     ];
 
@@ -29,6 +30,7 @@ class UserConnectorInboundEvent extends Model
         'payload' => 'array',
         'meta' => 'array',
         'event_timestamp' => 'datetime',
+        'session_correlated_at' => 'datetime',
     ];
 
     public function connection(): BelongsTo
@@ -55,6 +57,22 @@ class UserConnectorInboundEvent extends Model
         $this->update([
             'processing_status' => 'failed',
             'processing_error' => $error,
+        ]);
+    }
+
+    public function markSessionCorrelated(): void
+    {
+        $this->update([
+            'session_correlated_at' => now(),
+            'processing_error' => null,
+        ]);
+    }
+
+    public function markCorrelationFailed(string $error): void
+    {
+        $this->update([
+            'processing_error' => substr($error, 0, 1000),
+            'session_correlated_at' => null,
         ]);
     }
 }

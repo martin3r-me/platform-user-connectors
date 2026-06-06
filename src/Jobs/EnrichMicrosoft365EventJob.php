@@ -574,6 +574,9 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
 
     /**
      * After enrichment, correlate the event into the appropriate session table.
+     * On success the event is marked as session_correlated_at=now; on failure
+     * the throwable's message is stored in processing_error so the bug is
+     * visible in the DB/UI without depending on log retention.
      */
     protected function correlateSession(UserConnectorInboundEvent $event): void
     {
@@ -581,19 +584,28 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             $service = app(InboundEventService::class);
             $eventType = $event->event_type;
 
+            $handled = true;
             if (str_starts_with($eventType, 'mail.')) {
                 $service->updateMailSession($event);
             } elseif (str_starts_with($eventType, 'calendar.')) {
                 $service->updateMeetingSession($event);
             } elseif (str_starts_with($eventType, 'teams.')) {
                 $service->updateMessageSession($event);
+            } else {
+                $handled = false;
+            }
+
+            if ($handled) {
+                $event->markSessionCorrelated();
             }
         } catch (\Throwable $e) {
             Log::warning('MS365 Enrichment: Session-Korrelation fehlgeschlagen', [
                 'event_id' => $event->id,
                 'event_type' => $event->event_type,
                 'error' => $e->getMessage(),
+                'trace_top' => array_slice(explode("\n", $e->getTraceAsString()), 0, 5),
             ]);
+            $event->markCorrelationFailed(get_class($e) . ': ' . $e->getMessage());
         }
     }
 }

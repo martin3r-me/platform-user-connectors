@@ -101,6 +101,11 @@ class InboundEventService
             return;
         }
 
+        $this->withSessionLock("uc_call:{$event->external_id}", fn () => $this->doUpdateCallSession($event));
+    }
+
+    protected function doUpdateCallSession(UserConnectorInboundEvent $event): void
+    {
         $session = UserConnectorCallSession::where('external_call_id', $event->external_id)->first();
 
         $eventType = $event->event_type;
@@ -189,6 +194,11 @@ class InboundEventService
             return;
         }
 
+        $this->withSessionLock("uc_mail:{$event->external_id}", fn () => $this->doUpdateMailSession($event));
+    }
+
+    protected function doUpdateMailSession(UserConnectorInboundEvent $event): void
+    {
         // After enrichment, data lives in $event->meta (merged by EnrichMicrosoft365EventJob)
         $meta = $event->meta ?? [];
         $eventType = $event->event_type;
@@ -236,6 +246,11 @@ class InboundEventService
             return;
         }
 
+        $this->withSessionLock("uc_meeting:{$event->external_id}", fn () => $this->doUpdateMeetingSession($event));
+    }
+
+    protected function doUpdateMeetingSession(UserConnectorInboundEvent $event): void
+    {
         // After enrichment, data lives in $event->meta
         $meta = $event->meta ?? [];
         $eventType = $event->event_type;
@@ -322,6 +337,14 @@ class InboundEventService
             return;
         }
 
+        $this->withSessionLock(
+            "uc_message:{$event->connection_id}:{$event->external_id}",
+            fn () => $this->doUpdateMessageSession($event),
+        );
+    }
+
+    protected function doUpdateMessageSession(UserConnectorInboundEvent $event): void
+    {
         // Messages are immutable — skip if already exists for this connection
         if (UserConnectorMessageSession::where('external_message_id', $event->external_id)
             ->where('connection_id', $event->connection_id)
@@ -351,6 +374,26 @@ class InboundEventService
             'sent_at' => $event->event_timestamp,
             'meta' => $meta,
         ]);
+    }
+
+    /**
+     * Serialize concurrent correlation attempts for the same external_id so
+     * that 5 webhook events for one mail can't race each other on the
+     * UNIQUE constraint of external_mail_id. Lock waits up to 5s; if it
+     * can't acquire, falls back to running without the lock (better to risk
+     * a race than to drop the event entirely).
+     */
+    protected function withSessionLock(string $key, \Closure $callback): void
+    {
+        try {
+            Cache::lock($key, 10)->block(5, $callback);
+        } catch (\Throwable $e) {
+            Log::warning('UserConnectors: session lock failed, running without lock', [
+                'key' => $key,
+                'error' => $e->getMessage(),
+            ]);
+            $callback();
+        }
     }
 
     /**
