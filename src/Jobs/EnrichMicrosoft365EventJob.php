@@ -163,7 +163,7 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
         $response = Http::withToken($token)
             ->timeout(15)
             ->get($url, [
-                '$select' => 'id,subject,bodyPreview,from,toRecipients,ccRecipients,receivedDateTime,isRead,conversationId,hasAttachments,isDraft,sentDateTime',
+                '$select' => 'id,subject,bodyPreview,body,from,toRecipients,ccRecipients,receivedDateTime,isRead,conversationId,hasAttachments,isDraft,sentDateTime',
             ]);
 
         if (!$response->successful()) {
@@ -189,6 +189,25 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             ->values()
             ->all();
 
+        // Full body — strip HTML if Graph returned content-type "html" so
+        // downstream LLM enrichment gets clean text instead of markup noise.
+        $bodyRaw = $data['body']['content'] ?? '';
+        $bodyContentType = strtolower((string) ($data['body']['contentType'] ?? 'text'));
+        if ($bodyRaw !== '' && $bodyContentType === 'html') {
+            // Decode entities first, then strip tags, then collapse whitespace.
+            $bodyText = html_entity_decode(strip_tags($bodyRaw), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $bodyText = preg_replace("/[ \t]+/", ' ', $bodyText);
+            $bodyText = preg_replace("/(\r?\n[ \t]*){3,}/", "\n\n", $bodyText);
+            $bodyText = trim($bodyText);
+        } else {
+            $bodyText = trim($bodyRaw);
+        }
+        // Guard rail — extreme outliers (newsletters with embedded styles) can
+        // blow the row size; full body remains accessible via Graph if needed.
+        if (mb_strlen($bodyText) > 200000) {
+            $bodyText = mb_substr($bodyText, 0, 200000);
+        }
+
         // Direction detection:
         // - For shared mailboxes: if from matches the shared mailbox address, it's outbound
         // - For personal: if from matches the user's email, it's outbound
@@ -207,6 +226,8 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
         $meta = [
             'subject' => $data['subject'] ?? null,
             'bodyPreview' => $data['bodyPreview'] ?? null,
+            'body' => $bodyText !== '' ? $bodyText : null,
+            'bodyContentType' => $bodyContentType,
             'isRead' => $data['isRead'] ?? null,
             'conversationId' => $data['conversationId'] ?? null,
             'recipients' => $recipients,

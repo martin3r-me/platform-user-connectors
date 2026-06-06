@@ -24,6 +24,7 @@ class UserConnectorMailSession extends Model
         'cc_addresses',
         'subject',
         'body_preview',
+        'body',
         'is_read',
         'has_attachments',
         'is_draft',

@@ -221,6 +221,7 @@ class InboundEventService
             'cc_addresses' => $this->extractAddressList($meta['ccRecipients'] ?? null),
             'subject' => $meta['subject'] ?? null,
             'body_preview' => $meta['bodyPreview'] ?? null,
+            'body' => $meta['body'] ?? null,
             'conversation_id' => $meta['conversationId'] ?? null,
             'is_read' => $isRead,
             'has_attachments' => (bool) ($meta['hasAttachments'] ?? false),
