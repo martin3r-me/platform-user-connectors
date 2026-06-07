@@ -166,6 +166,71 @@ class Microsoft365CalendarConnector implements CalendarConnector
     }
 
     /**
+     * Finds common free time slots across multiple attendees via MS Graph
+     * POST /me/findMeetingTimes. Normalises the response into the provider-
+     * agnostic shape defined on the CalendarConnector contract.
+     */
+    public function findMeetingTimes(
+        User $user,
+        array $participants,
+        Carbon $after,
+        Carbon $before,
+        int $durationMinutes = 30,
+        int $maxCandidates = 5,
+    ): array {
+        $attendees = array_values(array_map(fn ($email) => [
+            'type' => 'required',
+            'emailAddress' => ['address' => trim((string) $email)],
+        ], array_filter($participants)));
+
+        $startTz = $this->normaliseTimeZone($after);
+        $endTz = $this->normaliseTimeZone($before);
+
+        $payload = [
+            'attendees' => $attendees,
+            'timeConstraint' => [
+                'timeSlots' => [[
+                    'start' => [
+                        'dateTime' => $startTz === 'UTC' ? $after->copy()->utc()->format('Y-m-d\TH:i:s') : $after->format('Y-m-d\TH:i:s'),
+                        'timeZone' => $startTz,
+                    ],
+                    'end' => [
+                        'dateTime' => $endTz === 'UTC' ? $before->copy()->utc()->format('Y-m-d\TH:i:s') : $before->format('Y-m-d\TH:i:s'),
+                        'timeZone' => $endTz,
+                    ],
+                ]],
+            ],
+            'meetingDuration' => 'PT' . max(15, $durationMinutes) . 'M',
+            'maxCandidates' => max(1, min(50, $maxCandidates)),
+            'isOrganizerOptional' => false,
+            'returnSuggestionReasons' => true,
+            'minimumAttendeePercentage' => 100,
+        ];
+
+        $data = $this->api->post($user, '/me/findMeetingTimes', $payload);
+
+        $suggestions = [];
+        foreach ($data['meetingTimeSuggestions'] ?? [] as $row) {
+            $slot = $row['meetingTimeSlot'] ?? [];
+            $startRaw = $slot['start'] ?? [];
+            $endRaw = $slot['end'] ?? [];
+
+            $suggestions[] = [
+                'start' => $this->parseGraphDateTime($startRaw),
+                'end' => $this->parseGraphDateTime($endRaw),
+                'confidence' => (int) ($row['confidence'] ?? 0),
+                'reason' => $row['suggestionReason'] ?? null,
+                'attendee_availability' => array_map(fn ($a) => [
+                    'email' => $a['attendee']['emailAddress']['address'] ?? '',
+                    'availability' => $a['availability'] ?? 'unknown',
+                ], $row['attendeeAvailability'] ?? []),
+            ];
+        }
+
+        return ['suggestions' => $suggestions];
+    }
+
+    /**
      * Antwort auf eine Termin-Einladung: accept / decline / tentativelyAccept.
      * Optional: kurzer Kommentar an den Organisator + sendResponse-Flag.
      */

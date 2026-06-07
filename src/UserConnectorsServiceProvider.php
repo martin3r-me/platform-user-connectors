@@ -160,6 +160,7 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\UpdateEventTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\DeleteEventTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\RespondEventTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\FindAvailabilityTool());
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: Microsoft 365 Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
         }
