@@ -138,6 +138,51 @@ class Microsoft365MailConnector implements MessageConnector
         );
     }
 
+    /**
+     * Forward an existing mail to one or more recipients via MS Graph's native
+     * forward endpoint — preserves attachments + original headers, unlike
+     * sending a brand-new message. Pass addresses as a list; comment is the
+     * forwarding intro (sits above the original mail in Outlook).
+     *
+     * @param array<int, string> $toAddresses
+     */
+    public function forwardMessage(User $user, string $messageId, array $toAddresses, string $comment = ''): Message
+    {
+        $recipients = array_values(array_filter(array_map(
+            fn ($addr) => is_string($addr) && trim($addr) !== ''
+                ? ['emailAddress' => ['address' => trim($addr)]]
+                : null,
+            $toAddresses,
+        )));
+
+        if (empty($recipients)) {
+            throw new \InvalidArgumentException('Forward needs at least one recipient.');
+        }
+
+        $payload = [
+            'comment' => $comment,
+            'toRecipients' => $recipients,
+        ];
+
+        $this->api->post($user, "/me/messages/{$messageId}/forward", $payload);
+
+        // forward returns 202 with no body — return a minimal Message stub.
+        return new Message(
+            id: 'forward-' . now()->timestamp,
+            provider: 'microsoft365',
+            from: 'me',
+            to: array_map(fn ($r) => $r['emailAddress']['address'], $recipients),
+            subject: null,
+            body: $comment,
+            bodyType: 'html',
+            date: now(),
+            isRead: true,
+            threadId: null,
+            attachments: [],
+            raw: [],
+        );
+    }
+
     public function searchMessages(User $user, string $query, ?Pagination $pagination = null): array
     {
         $top = $pagination?->perPage ?? 25;

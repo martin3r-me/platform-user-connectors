@@ -139,6 +139,7 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\TestConnectionTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListMailTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\SendMailTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ForwardMailTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListEventsTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\CreateEventTool());
         } catch (\Throwable $e) {
