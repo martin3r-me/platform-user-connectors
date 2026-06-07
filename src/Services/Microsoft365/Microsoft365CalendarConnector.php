@@ -118,7 +118,10 @@ class Microsoft365CalendarConnector implements CalendarConnector
     protected function normaliseTimeZone(Carbon $time): string
     {
         $name = $time->timezone->getName();
-        if (preg_match('/^[+-]\d{2}:?\d{2}$/', $name)) {
+        // Graph rejects offset-form ("+02:00") and the "Z" military designator.
+        // Fall back to UTC in either case — the caller's wall-clock intent is
+        // preserved because we convert the dateTime alongside the timeZone.
+        if ($name === 'Z' || preg_match('/^[+-]\d{2}:?\d{2}$/', $name)) {
             return 'UTC';
         }
         return $name;
