@@ -144,6 +144,7 @@ class UserConnectorsServiceProvider extends ServiceProvider
 
             // Microsoft 365 — Teams (Chats + Channels)
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\SendTeamsChatTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\CreateTeamsChatTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListTeamsChatsTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListTeamsChatMessagesTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ForwardTeamsChatTool());

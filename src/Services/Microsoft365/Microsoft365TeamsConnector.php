@@ -88,10 +88,13 @@ class Microsoft365TeamsConnector implements PresenceConnector
 
     public function listChats(User $user): array
     {
+        // conversationMember has no 'email' property — expanding members
+        // without a $select gives us displayName + userId reliably across
+        // the aadUserConversationMember subtype.
         $data = $this->api->get($user, '/me/chats', [
             '$top' => 50,
             '$select' => 'id,topic,chatType,lastUpdatedDateTime',
-            '$expand' => 'members($select=displayName,email)',
+            '$expand' => 'members',
             '$orderby' => 'lastUpdatedDateTime desc',
         ]);
 
@@ -102,11 +105,89 @@ class Microsoft365TeamsConnector implements PresenceConnector
             'last_updated' => $c['lastUpdatedDateTime'] ?? null,
             'members' => array_map(fn (array $m) => [
                 'name' => $m['displayName'] ?? null,
-                'email' => $m['email'] ?? null,
+                'user_id' => $m['userId'] ?? null,
             ], $c['members'] ?? []),
         ], $data['value'] ?? []);
 
         return ['chats' => $chats];
+    }
+
+    /**
+     * Creates a new Teams chat (1:1 or group). For group chats, pass
+     * member_user_ids with 2+ entries; for 1:1, exactly one other user.
+     * The signed-in user is implicitly added — caller does not need to
+     * include their own userId.
+     */
+    public function createChat(User $user, array $memberUserIds, ?string $topic = null): array
+    {
+        $memberUserIds = array_values(array_filter(array_unique(array_map(
+            fn ($id) => trim((string) $id),
+            $memberUserIds,
+        ))));
+        if (empty($memberUserIds)) {
+            throw new \InvalidArgumentException('At least one member user_id is required.');
+        }
+
+        // Resolve the signed-in user's Graph id (we need it as an explicit
+        // chat member; Graph does not auto-add the caller).
+        $me = $this->api->get($user, '/me', ['$select' => 'id']);
+        $myId = (string) ($me['id'] ?? '');
+        if ($myId === '') {
+            throw new \RuntimeException('Could not resolve the signed-in user\'s Graph id.');
+        }
+        $allIds = array_values(array_unique(array_merge([$myId], $memberUserIds)));
+
+        $chatType = count($allIds) > 2 ? 'group' : 'oneOnOne';
+
+        $members = array_map(fn ($id) => [
+            '@odata.type' => '#microsoft.graph.aadUserConversationMember',
+            'roles' => ['owner'],
+            'user@odata.bind' => "https://graph.microsoft.com/v1.0/users('{$id}')",
+        ], $allIds);
+
+        $payload = [
+            'chatType' => $chatType,
+            'members' => $members,
+        ];
+        if ($chatType === 'group' && $topic !== null && trim($topic) !== '') {
+            $payload['topic'] = trim($topic);
+        }
+
+        $data = $this->api->post($user, '/chats', $payload);
+
+        return [
+            'id' => (string) ($data['id'] ?? ''),
+            'chat_type' => $data['chatType'] ?? $chatType,
+            'topic' => $data['topic'] ?? null,
+            'member_count' => count($allIds),
+        ];
+    }
+
+    /**
+     * Resolve one or more email addresses to Graph user ids. Useful for the
+     * createChat tool which lets the LLM call with emails rather than uuids.
+     *
+     * @param array<int, string> $emails
+     * @return array<string, string> email => user_id  (unresolved emails dropped)
+     */
+    public function resolveUserIds(User $user, array $emails): array
+    {
+        $resolved = [];
+        foreach ($emails as $email) {
+            $email = trim((string) $email);
+            if ($email === '') {
+                continue;
+            }
+            try {
+                $data = $this->api->get($user, "/users/{$email}", ['$select' => 'id,mail,userPrincipalName']);
+                if (!empty($data['id'])) {
+                    $resolved[$email] = (string) $data['id'];
+                }
+            } catch (\Throwable) {
+                // unresolvable mail — caller decides how to handle.
+            }
+        }
+        return $resolved;
     }
 
     public function sendChatMessage(User $user, string $chatId, string $body, string $contentType = 'html'): array
