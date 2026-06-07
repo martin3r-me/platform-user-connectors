@@ -20,8 +20,10 @@ class ReplyMailTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Antwortet auf eine Outlook-Mail über Graphs nativen /reply-Endpoint '
-            . '(Thread + Conversation-ID bleiben erhalten). Erwartet die external_mail_id.';
+        return 'Antwortet auf eine Outlook-Mail über Graphs nativen Reply-Endpoint '
+            . '(Thread + Conversation-ID bleiben erhalten). Default: reply_all=true — '
+            . 'alle ursprünglichen Empfänger bleiben drauf. Mit reply_all=false geht die '
+            . 'Antwort nur an den Absender.';
     }
 
     public function getSchema(): array
@@ -32,6 +34,7 @@ class ReplyMailTool implements ToolContract, ToolMetadataContract
                 'connection_id' => ['type' => 'integer'],
                 'external_mail_id' => ['type' => 'string'],
                 'body' => ['type' => 'string'],
+                'reply_all' => ['type' => 'boolean', 'description' => 'Default: true.'],
             ],
             'required' => ['external_mail_id', 'body'],
         ];
@@ -56,7 +59,8 @@ class ReplyMailTool implements ToolContract, ToolMetadataContract
                     app(Microsoft365ApiService::class)->forConnection((int) $arguments['connection_id'])
                 );
             }
-            $message = $connector->replyToMessage($context->user, $mailId, $body);
+            $replyAll = $arguments['reply_all'] ?? true;
+            $message = $connector->replyToMessage($context->user, $mailId, $body, [], (bool) $replyAll);
             return ToolResult::success(['message' => $message->toArray(), 'status' => 'sent']);
         } catch (\Throwable $e) {
             return ToolResult::error('EXECUTION_ERROR', 'Reply fehlgeschlagen: ' . $e->getMessage());

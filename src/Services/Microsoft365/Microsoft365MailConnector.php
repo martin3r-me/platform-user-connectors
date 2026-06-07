@@ -113,15 +113,22 @@ class Microsoft365MailConnector implements MessageConnector
         );
     }
 
-    public function replyToMessage(User $user, string $messageId, string $body, array $attachments = []): Message
+    /**
+     * Reply to a mail via Graph. Default: replyAll — alle ursprünglichen
+     * Empfänger (außer dem Absender) bleiben dran. Override mit replyAll=false
+     * für eine Privat-Antwort nur an den Absender.
+     */
+    public function replyToMessage(User $user, string $messageId, string $body, array $attachments = [], bool $replyAll = true): Message
     {
+        $endpoint = $replyAll ? 'replyAll' : 'reply';
+
         $payload = [
             'comment' => $body,
         ];
 
-        $this->api->post($user, "/me/messages/{$messageId}/reply", $payload);
+        $this->api->post($user, "/me/messages/{$messageId}/{$endpoint}", $payload);
 
-        // reply returns 202, return a minimal Message
+        // reply / replyAll returns 202, return a minimal Message stub.
         return new Message(
             id: 'reply-' . now()->timestamp,
             provider: 'microsoft365',
