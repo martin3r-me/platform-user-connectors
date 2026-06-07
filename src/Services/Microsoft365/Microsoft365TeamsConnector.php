@@ -109,11 +109,11 @@ class Microsoft365TeamsConnector implements PresenceConnector
         return ['chats' => $chats];
     }
 
-    public function sendChatMessage(User $user, string $chatId, string $body): array
+    public function sendChatMessage(User $user, string $chatId, string $body, string $contentType = 'html'): array
     {
         $data = $this->api->post($user, "/chats/{$chatId}/messages", [
             'body' => [
-                'contentType' => 'html',
+                'contentType' => in_array($contentType, ['html', 'text'], true) ? $contentType : 'html',
                 'content' => $body,
             ],
         ]);
