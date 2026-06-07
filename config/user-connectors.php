@@ -20,6 +20,7 @@ return [
                 'User.Read',
                 'Mail.ReadWrite', 'Mail.ReadWrite.Shared', 'Mail.Send',
                 'Calendars.ReadWrite',
+                'Place.Read.All',
                 'Chat.Read', 'Chat.ReadWrite',
                 'ChannelMessage.Read.All', 'ChannelMessage.Send',
                 'Team.ReadBasic.All', 'Channel.ReadBasic.All',
