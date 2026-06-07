@@ -240,8 +240,8 @@ class Microsoft365CalendarConnector implements CalendarConnector
             provider: 'microsoft365',
             title: $data['subject'] ?? '',
             description: $data['body']['content'] ?? null,
-            start: Carbon::parse($data['start']['dateTime'] ?? now()),
-            end: Carbon::parse($data['end']['dateTime'] ?? now()),
+            start: $this->parseGraphDateTime($data['start'] ?? null),
+            end: $this->parseGraphDateTime($data['end'] ?? null),
             isAllDay: $data['isAllDay'] ?? false,
             status: $status,
             location: $data['location']['displayName'] ?? null,
@@ -249,5 +249,26 @@ class Microsoft365CalendarConnector implements CalendarConnector
             onlineMeetingUrl: $onlineMeetingUrl,
             raw: $data,
         );
+    }
+
+    /**
+     * Graph schickt start/end als { dateTime, timeZone } und der dateTime-
+     * String ist *ohne* Offset (z. B. "2026-06-08T08:00:00.0000000"). Wenn
+     * man den nur durch Carbon::parse() jagt, landet er in PHPs Default-TZ
+     * — der Wall-Clock stimmt dann nicht mehr. Wir parsen explizit mit der
+     * mitgeschickten timeZone und kippen das Ergebnis in UTC, damit das
+     * abgehende ISO8601 mit klarem Offset rauskommt.
+     */
+    protected function parseGraphDateTime(?array $slot): Carbon
+    {
+        if (!$slot || empty($slot['dateTime'])) {
+            return Carbon::now();
+        }
+        try {
+            $tz = $slot['timeZone'] ?? 'UTC';
+            return Carbon::parse($slot['dateTime'], $tz)->utc();
+        } catch (\Throwable) {
+            return Carbon::parse($slot['dateTime']);
+        }
     }
 }
