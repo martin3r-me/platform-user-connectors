@@ -35,8 +35,13 @@ class CreateEventTool implements ToolContract, ToolMetadataContract
                     'items' => ['type' => 'string'],
                     'description' => 'E-Mail-Adressen der Teilnehmer.',
                 ],
+                'rooms' => [
+                    'type' => 'array',
+                    'items' => ['type' => 'string'],
+                    'description' => 'E-Mail-Adressen der Raum-Ressourcen, die als Resource-Attendee mit-gebucht werden. Discovery via calendar.rooms.list.',
+                ],
                 'description' => ['type' => 'string', 'description' => 'Beschreibung (HTML erlaubt).'],
-                'location' => ['type' => 'string', 'description' => 'Ort des Events.'],
+                'location' => ['type' => 'string', 'description' => 'Ort des Events. Bei genau einem Raum + leerer Location wird automatisch die Raum-Mailbox als Anzeige-Location übernommen.'],
                 'online_meeting' => ['type' => 'boolean', 'description' => 'Teams-Meeting erstellen?'],
             ],
             'required' => ['title', 'start', 'end'],
@@ -68,6 +73,7 @@ class CreateEventTool implements ToolContract, ToolMetadataContract
                     'description' => $arguments['description'] ?? null,
                     'location' => $arguments['location'] ?? null,
                     'online_meeting' => $arguments['online_meeting'] ?? false,
+                    'rooms' => $arguments['rooms'] ?? [],
                 ],
             );
 

@@ -68,4 +68,37 @@ interface CalendarConnector
         int $durationMinutes = 30,
         int $maxCandidates = 5,
     ): array;
+
+    /**
+     * Listet Raum-Listen ("Building Düsseldorf", "Standort Berlin") —
+     * Container für Räume, üblicherweise nach Gebäude oder Standort
+     * gruppiert. Provider-agnostisch.
+     *
+     * Return shape:
+     *   [
+     *     ['id' => string, 'name' => string, 'email' => string],
+     *     ...
+     *   ]
+     */
+    public function listRoomLists(User $user): array;
+
+    /**
+     * Listet Räume / Kalender-Ressourcen — bookable resource mailboxes.
+     * Optional auf eine Raum-Liste eingeschränkt (z.B. nur die Räume eines
+     * Standorts). Provider-agnostisch.
+     *
+     * Return shape:
+     *   [
+     *     [
+     *       'id' => string,
+     *       'name' => string,
+     *       'email' => string,
+     *       'capacity' => int|null,
+     *       'building' => string|null,
+     *       'floor' => string|null,
+     *     ],
+     *     ...
+     *   ]
+     */
+    public function listRooms(User $user, ?string $roomListEmail = null): array;
 }

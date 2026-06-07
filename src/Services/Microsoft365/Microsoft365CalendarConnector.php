@@ -78,8 +78,28 @@ class Microsoft365CalendarConnector implements CalendarConnector
                     'address' => is_string($a) ? $a : ($a['email'] ?? ''),
                     'name' => is_string($a) ? null : ($a['name'] ?? null),
                 ],
-                'type' => 'required',
+                // 'required' | 'optional' | 'resource' — Default required.
+                'type' => is_array($a) && in_array($a['type'] ?? null, ['optional', 'resource'], true)
+                    ? $a['type']
+                    : 'required',
             ], $attendees);
+        }
+
+        // Räume als Resource-Attendees mit anhängen. Der Caller kann sie auch
+        // direkt im $attendees-Array mit type=resource übergeben — diese
+        // Convenience nimmt einfach Mail-Adressen entgegen.
+        if (!empty($options['rooms'])) {
+            $roomAttendees = array_map(fn ($email) => [
+                'emailAddress' => ['address' => trim((string) $email)],
+                'type' => 'resource',
+            ], array_filter((array) $options['rooms']));
+            $body['attendees'] = array_merge($body['attendees'] ?? [], $roomAttendees);
+
+            // Wenn nur ein Raum + keine explizite Location, übernimm den Raum
+            // als displayName — Outlook zeigt das dann sauber im UI.
+            if (empty($body['location']) && count($roomAttendees) === 1) {
+                $body['location'] = ['displayName' => $roomAttendees[0]['emailAddress']['address']];
+            }
         }
 
         if (!empty($options['description'])) {
@@ -163,6 +183,46 @@ class Microsoft365CalendarConnector implements CalendarConnector
     public function deleteEvent(User $user, string $eventId): bool
     {
         return $this->api->delete($user, "/me/events/{$eventId}");
+    }
+
+    /**
+     * Listet alle Raum-Listen (RoomList-Resources) im Tenant via Graph
+     * GET /places/microsoft.graph.roomlist. Container für Räume —
+     * typischerweise pro Gebäude oder Standort.
+     */
+    public function listRoomLists(User $user): array
+    {
+        $data = $this->api->get($user, '/places/microsoft.graph.roomlist', []);
+
+        return array_map(fn (array $rl) => [
+            'id' => (string) ($rl['id'] ?? ''),
+            'name' => (string) ($rl['displayName'] ?? ''),
+            'email' => (string) ($rl['emailAddress'] ?? ''),
+        ], $data['value'] ?? []);
+    }
+
+    /**
+     * Listet Räume (Resource-Mailboxen) — entweder alle Räume im Tenant,
+     * oder eingeschränkt auf eine Raum-Liste (Building/Standort). Beide
+     * Graph-Pfade werden hier hinter einer einheitlichen Schnittstelle
+     * gekapselt.
+     */
+    public function listRooms(User $user, ?string $roomListEmail = null): array
+    {
+        $endpoint = $roomListEmail
+            ? "/places/{$roomListEmail}/microsoft.graph.roomlist/rooms"
+            : '/places/microsoft.graph.room';
+
+        $data = $this->api->get($user, $endpoint, []);
+
+        return array_map(fn (array $r) => [
+            'id' => (string) ($r['id'] ?? ''),
+            'name' => (string) ($r['displayName'] ?? ''),
+            'email' => (string) ($r['emailAddress'] ?? ''),
+            'capacity' => isset($r['capacity']) ? (int) $r['capacity'] : null,
+            'building' => $r['building'] ?? null,
+            'floor' => isset($r['floorNumber']) ? (string) $r['floorNumber'] : ($r['floorLabel'] ?? null),
+        ], $data['value'] ?? []);
     }
 
     /**
