@@ -54,15 +54,21 @@ class Microsoft365CalendarConnector implements CalendarConnector
 
     public function createEvent(User $user, string $title, Carbon $start, Carbon $end, array $attendees = [], array $options = []): CalendarEvent
     {
+        // Graph akzeptiert nur IANA-Zeitzonen (Europe/Berlin, UTC, …) — nicht
+        // Offsets wie "+02:00", die Carbon zurückgibt, wenn der Input mit
+        // numerischem Offset geparst wurde. Fallback auf UTC + Konvertierung.
+        $startTz = $this->normaliseTimeZone($start);
+        $endTz = $this->normaliseTimeZone($end);
+
         $body = [
             'subject' => $title,
             'start' => [
-                'dateTime' => $start->format('Y-m-d\TH:i:s'),
-                'timeZone' => $start->timezone->getName(),
+                'dateTime' => $startTz === 'UTC' ? $start->copy()->utc()->format('Y-m-d\TH:i:s') : $start->format('Y-m-d\TH:i:s'),
+                'timeZone' => $startTz,
             ],
             'end' => [
-                'dateTime' => $end->format('Y-m-d\TH:i:s'),
-                'timeZone' => $end->timezone->getName(),
+                'dateTime' => $endTz === 'UTC' ? $end->copy()->utc()->format('Y-m-d\TH:i:s') : $end->format('Y-m-d\TH:i:s'),
+                'timeZone' => $endTz,
             ],
         ];
 
@@ -101,6 +107,21 @@ class Microsoft365CalendarConnector implements CalendarConnector
         $data = $this->api->post($user, '/me/events', $body);
 
         return $this->mapEvent($data);
+    }
+
+    /**
+     * Graph braucht IANA-TZ-Namen ("Europe/Berlin", "UTC", …). Wenn Carbon
+     * den TZ-Namen als Offset ("+02:00") zurückgibt — was passiert, wenn
+     * der Input mit numerischem Offset geparst wurde — wechseln wir auf
+     * UTC und konvertieren die Zeit entsprechend.
+     */
+    protected function normaliseTimeZone(Carbon $time): string
+    {
+        $name = $time->timezone->getName();
+        if (preg_match('/^[+-]\d{2}:?\d{2}$/', $name)) {
+            return 'UTC';
+        }
+        return $name;
     }
 
     public function updateEvent(User $user, string $eventId, array $changes): CalendarEvent
