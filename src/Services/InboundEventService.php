@@ -360,6 +360,19 @@ class InboundEventService
 
         $messageType = str_starts_with($eventType, 'teams.') ? 'teams_chat' : 'sms';
 
+        // Skip non-message Teams events ("messageType: unknownFutureValue" =
+        // Lifecycle/System-Events wie Meeting-Chat-Created, Member-Added,
+        // Topic-Set). Diese landen weiterhin im Event-Log
+        // (user_connector_inbound_events) — nur die strukturierte
+        // Message-Session bekommt sie nicht mehr, damit Konsumenten wie die
+        // Inbox keinen leeren Müll sehen.
+        if ($messageType === 'teams_chat'
+            && isset($meta['messageType'])
+            && $meta['messageType'] !== 'message'
+        ) {
+            return;
+        }
+
         UserConnectorMessageSession::create([
             'connection_id' => $event->connection_id,
             'connector_key' => $event->connector_key,
