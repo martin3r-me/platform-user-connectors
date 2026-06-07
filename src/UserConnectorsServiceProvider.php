@@ -135,14 +135,31 @@ class UserConnectorsServiceProvider extends ServiceProvider
         try {
             $registry = resolve(\Platform\Core\Tools\ToolRegistry::class);
 
-            // Microsoft 365 Tools
+            // Microsoft 365 — Mail
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\TestConnectionTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListMailTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\SendMailTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ReplyMailTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ForwardMailTool());
+
+            // Microsoft 365 — Teams (Chats + Channels)
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\SendTeamsChatTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListTeamsChatsTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListTeamsChatMessagesTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ForwardTeamsChatTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListJoinedTeamsTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListTeamsChannelsTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListTeamsChannelMessagesTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\SendTeamsChannelMessageTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ReplyTeamsChannelThreadTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ForwardTeamsChannelTool());
+
+            // Microsoft 365 — Calendar
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListEventsTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\CreateEventTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\UpdateEventTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\DeleteEventTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\RespondEventTool());
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: Microsoft 365 Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
         }
@@ -154,6 +171,8 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $registry->register(new \Platform\UserConnectors\Tools\RingCentral\TestConnectionTool());
             $registry->register(new \Platform\UserConnectors\Tools\RingCentral\GetCallLogTool());
             $registry->register(new \Platform\UserConnectors\Tools\RingCentral\SendSMSTool());
+            $registry->register(new \Platform\UserConnectors\Tools\RingCentral\ListSMSTool());
+            $registry->register(new \Platform\UserConnectors\Tools\RingCentral\ReplySMSTool());
             $registry->register(new \Platform\UserConnectors\Tools\RingCentral\InitiateCallTool());
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: RingCentral Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
@@ -166,6 +185,8 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $registry->register(new \Platform\UserConnectors\Tools\Sipgate\TestConnectionTool());
             $registry->register(new \Platform\UserConnectors\Tools\Sipgate\GetCallLogTool());
             $registry->register(new \Platform\UserConnectors\Tools\Sipgate\SendSMSTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Sipgate\ListSMSTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Sipgate\ReplySMSTool());
             $registry->register(new \Platform\UserConnectors\Tools\Sipgate\InitiateCallTool());
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: Sipgate Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);

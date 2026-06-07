@@ -125,6 +125,110 @@ class Microsoft365TeamsConnector implements PresenceConnector
     }
 
     /**
+     * Read messages from a 1:1 or group chat.
+     */
+    public function getChatMessages(User $user, string $chatId, ?Pagination $pagination = null): array
+    {
+        $top = $pagination?->perPage ?? 25;
+
+        $data = $this->api->get($user, "/chats/{$chatId}/messages", [
+            '$top' => $top,
+        ]);
+
+        $messages = array_map(fn (array $m) => [
+            'id' => $m['id'] ?? '',
+            'from' => $m['from']['user']['displayName'] ?? ($m['from']['user']['id'] ?? 'unknown'),
+            'body' => $m['body']['content'] ?? '',
+            'body_type' => strtolower($m['body']['contentType'] ?? 'text'),
+            'created_at' => $m['createdDateTime'] ?? null,
+        ], $data['value'] ?? []);
+
+        return [
+            'messages' => $messages,
+            'pagination' => new Pagination(
+                page: $pagination?->page ?? 1,
+                perPage: $top,
+            ),
+        ];
+    }
+
+    /**
+     * Teams hat keinen nativen Chat-Forward — wir simulieren ihn als
+     * Quote-and-Send: Original-Inhalt als Blockquote oben, Kommentar
+     * darunter, dann normal in den Ziel-Chat senden.
+     */
+    public function forwardChatMessage(User $user, string $sourceChatId, string $sourceMessageId, string $targetChatId, string $comment = ''): array
+    {
+        $original = $this->api->get($user, "/chats/{$sourceChatId}/messages/{$sourceMessageId}", []);
+        $originalBody = $original['body']['content'] ?? '';
+        $originalFrom = $original['from']['user']['displayName'] ?? 'unbekannt';
+        $originalAt = $original['createdDateTime'] ?? '';
+
+        $html = '<div>' . nl2br(htmlspecialchars($comment)) . '</div>'
+            . '<blockquote style="border-left:3px solid #888;padding-left:8px;color:#555;">'
+            . '<div><em>Weitergeleitet: ' . htmlspecialchars($originalFrom) . ' (' . htmlspecialchars($originalAt) . ')</em></div>'
+            . $originalBody
+            . '</blockquote>';
+
+        return $this->sendChatMessage($user, $targetChatId, $html, 'html');
+    }
+
+    public function listJoinedTeams(User $user): array
+    {
+        $data = $this->api->get($user, '/me/joinedTeams', [
+            '$select' => 'id,displayName,description,isArchived',
+        ]);
+
+        return ['teams' => array_map(fn (array $t) => [
+            'id' => $t['id'] ?? '',
+            'name' => $t['displayName'] ?? '',
+            'description' => $t['description'] ?? null,
+            'is_archived' => (bool) ($t['isArchived'] ?? false),
+        ], $data['value'] ?? [])];
+    }
+
+    /**
+     * Antwort in einen bestehenden Channel-Thread (reply).
+     */
+    public function replyToChannelMessage(User $user, string $channelId, string $messageId, string $body, string $contentType = 'html'): array
+    {
+        [$teamId, $chId] = $this->parseChannelId($channelId);
+
+        $data = $this->api->post($user, "/teams/{$teamId}/channels/{$chId}/messages/{$messageId}/replies", [
+            'body' => [
+                'contentType' => in_array($contentType, ['html', 'text'], true) ? $contentType : 'html',
+                'content' => $body,
+            ],
+        ]);
+
+        return [
+            'id' => $data['id'] ?? '',
+            'status' => 'sent',
+        ];
+    }
+
+    /**
+     * Channel-Forward analog zu Chat-Forward: Quote+Send in einen
+     * (anderen) Channel.
+     */
+    public function forwardChannelMessage(User $user, string $sourceChannelId, string $sourceMessageId, string $targetChannelId, string $comment = ''): array
+    {
+        [$srcTeamId, $srcChId] = $this->parseChannelId($sourceChannelId);
+        $original = $this->api->get($user, "/teams/{$srcTeamId}/channels/{$srcChId}/messages/{$sourceMessageId}", []);
+        $originalBody = $original['body']['content'] ?? '';
+        $originalFrom = $original['from']['user']['displayName'] ?? 'unbekannt';
+        $originalAt = $original['createdDateTime'] ?? '';
+
+        $html = '<div>' . nl2br(htmlspecialchars($comment)) . '</div>'
+            . '<blockquote style="border-left:3px solid #888;padding-left:8px;color:#555;">'
+            . '<div><em>Weitergeleitet: ' . htmlspecialchars($originalFrom) . ' (' . htmlspecialchars($originalAt) . ')</em></div>'
+            . $originalBody
+            . '</blockquote>';
+
+        return $this->sendChannelMessage($user, $targetChannelId, $html);
+    }
+
+    /**
      * Parse combined channelId "teamId:channelId" into parts.
      */
     protected function parseChannelId(string $channelId): array

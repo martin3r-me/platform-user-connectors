@@ -141,6 +141,29 @@ class Microsoft365CalendarConnector implements CalendarConnector
         return $this->api->delete($user, "/me/events/{$eventId}");
     }
 
+    /**
+     * Antwort auf eine Termin-Einladung: accept / decline / tentativelyAccept.
+     * Optional: kurzer Kommentar an den Organisator + sendResponse-Flag.
+     */
+    public function respondToEvent(User $user, string $eventId, string $response, ?string $comment = null, bool $sendResponse = true): bool
+    {
+        $action = match (strtolower($response)) {
+            'accept', 'accepted', 'ja' => 'accept',
+            'decline', 'declined', 'nein' => 'decline',
+            'tentative', 'tentativelyaccept', 'vielleicht', 'maybe' => 'tentativelyAccept',
+            default => throw new \InvalidArgumentException("Unknown response: $response"),
+        };
+
+        $payload = ['sendResponse' => $sendResponse];
+        if ($comment !== null && $comment !== '') {
+            $payload['comment'] = $comment;
+        }
+
+        $this->api->post($user, "/me/events/{$eventId}/{$action}", $payload);
+
+        return true;
+    }
+
     public function getAvailability(User $user, Carbon $from, Carbon $to): array
     {
         $data = $this->api->get($user, '/me/calendarview', [
