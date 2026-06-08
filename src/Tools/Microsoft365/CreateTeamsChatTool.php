@@ -67,12 +67,20 @@ class CreateTeamsChatTool implements ToolContract, ToolMetadataContract
 
             $unresolved = [];
             if (!empty($emails)) {
-                $resolved = $connector->resolveUserIds($context->user, $emails);
-                $ids = array_merge($ids, array_values($resolved));
-                $unresolved = array_values(array_diff($emails, array_keys($resolved)));
+                $result = $connector->resolveUserIds($context->user, $emails);
+                $ids = array_merge($ids, array_values($result['resolved']));
+                $unresolved = $result['unresolved'];
             }
 
             if (empty($ids)) {
+                if (!empty($unresolved)) {
+                    return ToolResult::error(
+                        'VALIDATION_ERROR',
+                        'Keine der übergebenen E-Mail-Adressen konnte zu einem User aufgelöst werden: '
+                            . implode('; ', array_map(fn ($u) => "{$u['email']} ({$u['reason']})", $unresolved))
+                            . '. Alternativ member_user_ids[] direkt verwenden.'
+                    );
+                }
                 return ToolResult::error('VALIDATION_ERROR', 'Mindestens ein Mitglied (member_user_ids oder member_emails) ist erforderlich.');
             }
 

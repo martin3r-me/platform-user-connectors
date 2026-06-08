@@ -88,14 +88,15 @@ class Microsoft365TeamsConnector implements PresenceConnector
 
     public function listChats(User $user): array
     {
-        // conversationMember has no 'email' property — expanding members
-        // without a $select gives us displayName + userId reliably across
-        // the aadUserConversationMember subtype.
+        // Graph's /me/chats does not support $orderby on lastUpdatedDateTime
+        // (the only documented sortable field is lastMessagePreview/
+        // createdDateTime, which requires extra perms). We fetch without
+        // server-side ordering and sort the response client-side — same
+        // user-facing result, no permission rabbit hole.
         $data = $this->api->get($user, '/me/chats', [
             '$top' => 50,
             '$select' => 'id,topic,chatType,lastUpdatedDateTime',
             '$expand' => 'members',
-            '$orderby' => 'lastUpdatedDateTime desc',
         ]);
 
         $chats = array_map(fn (array $c) => [
@@ -108,6 +109,13 @@ class Microsoft365TeamsConnector implements PresenceConnector
                 'user_id' => $m['userId'] ?? null,
             ], $c['members'] ?? []),
         ], $data['value'] ?? []);
+
+        // Newest first by last_updated; null timestamps sink to the end.
+        usort($chats, function ($a, $b) {
+            $ta = $a['last_updated'] ?? '';
+            $tb = $b['last_updated'] ?? '';
+            return strcmp($tb, $ta);
+        });
 
         return ['chats' => $chats];
     }
@@ -164,30 +172,76 @@ class Microsoft365TeamsConnector implements PresenceConnector
     }
 
     /**
-     * Resolve one or more email addresses to Graph user ids. Useful for the
-     * createChat tool which lets the LLM call with emails rather than uuids.
+     * Resolve one or more email addresses to Graph user ids. Two strategies
+     * per email:
+     *   1. GET /users/{email} — works when the email equals the UPN
+     *   2. GET /users?$filter=mail eq '…' or userPrincipalName eq '…'
+     *      — covers the (common) case where the user's primary mail
+     *      differs from their UPN
+     *
+     * Returns an array with two keys so the caller can give the user a
+     * clear error per unresolved address instead of silently dropping it:
+     *
+     *   [
+     *     'resolved'   => array<string, string>  email => user_id
+     *     'unresolved' => array<int, array{email: string, reason: string}>
+     *   ]
      *
      * @param array<int, string> $emails
-     * @return array<string, string> email => user_id  (unresolved emails dropped)
      */
     public function resolveUserIds(User $user, array $emails): array
     {
         $resolved = [];
+        $unresolved = [];
+
         foreach ($emails as $email) {
             $email = trim((string) $email);
             if ($email === '') {
                 continue;
             }
+
+            // Strategy 1: direct lookup (email as UPN).
             try {
-                $data = $this->api->get($user, "/users/{$email}", ['$select' => 'id,mail,userPrincipalName']);
+                $data = $this->api->get(
+                    $user,
+                    '/users/' . rawurlencode($email),
+                    ['$select' => 'id,mail,userPrincipalName']
+                );
                 if (!empty($data['id'])) {
                     $resolved[$email] = (string) $data['id'];
+                    continue;
                 }
-            } catch (\Throwable) {
-                // unresolvable mail — caller decides how to handle.
+            } catch (\Throwable $e) {
+                // Fall through to strategy 2.
+            }
+
+            // Strategy 2: filter on mail OR UPN (covers BHG-style mismatch
+            // between the displayed mail and the AAD UPN).
+            $escaped = str_replace("'", "''", $email);
+            try {
+                $data = $this->api->get($user, '/users', [
+                    '$filter' => "mail eq '{$escaped}' or userPrincipalName eq '{$escaped}'",
+                    '$select' => 'id,mail,userPrincipalName',
+                    '$top' => 1,
+                ]);
+                $hit = $data['value'][0] ?? null;
+                if ($hit && !empty($hit['id'])) {
+                    $resolved[$email] = (string) $hit['id'];
+                    continue;
+                }
+                $unresolved[] = [
+                    'email' => $email,
+                    'reason' => 'No user matched on UPN or mail — wrong domain, external account, or missing User.Read.All scope.',
+                ];
+            } catch (\Throwable $e) {
+                $unresolved[] = [
+                    'email' => $email,
+                    'reason' => 'Lookup failed: ' . $e->getMessage(),
+                ];
             }
         }
-        return $resolved;
+
+        return ['resolved' => $resolved, 'unresolved' => $unresolved];
     }
 
     public function sendChatMessage(User $user, string $chatId, string $body, string $contentType = 'html'): array
