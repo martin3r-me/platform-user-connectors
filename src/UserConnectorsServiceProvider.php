@@ -98,20 +98,24 @@ class UserConnectorsServiceProvider extends ServiceProvider
         $this->loadViewsFrom(__DIR__ . '/../resources/views', 'user-connectors');
         $this->registerLivewireComponents();
 
-        // Commands
+        // Commands + schedule — gate both on runningInConsole() so the
+        // schedule:run boot is the only path that registers events. Outside
+        // of console the registration is wasted, and the previous always-on
+        // form looked registered to HTTP probes but apparently never landed
+        // in the actual schedule:run process.
         if ($this->app->runningInConsole()) {
             $this->commands([
                 RenewWebhookSubscriptions::class,
                 Console\Commands\BackfillSessions::class,
             ]);
-        }
 
-        $this->app->booted(function () {
-            $schedule = $this->app->make(Schedule::class);
-            $schedule->command('user-connectors:renew-webhook-subscriptions')
-                ->hourly()
-                ->withoutOverlapping();
-        });
+            $this->app->booted(function () {
+                $schedule = $this->app->make(Schedule::class);
+                $schedule->command('user-connectors:renew-webhook-subscriptions')
+                    ->hourly()
+                    ->withoutOverlapping();
+            });
+        }
 
         // LLM Tools
         $this->registerTools();
