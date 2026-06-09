@@ -29,7 +29,9 @@ class RenewSubscriptionsTool implements ToolContract, ToolMetadataContract
     {
         return 'Erneuert alle Webhook-Subscriptions einer microsoft365-Connection. '
             . 'Standardmäßig die erste aktive Connection des Users; via connection_id explizit wählbar. '
-            . 'Patcht expirationDateTime; bei Fehlern (Subscription nicht mehr da) wird neu angelegt.';
+            . 'Patcht expirationDateTime der bekannten Subscriptions; bei Fehlern (Subscription nicht mehr da) '
+            . 'wird neu angelegt. Mit force_recreate=true wird zusätzlich getSubscriptionResources gerufen — '
+            . 'fehlt eine Resource komplett in den credentials, wird sie damit (wieder) angelegt.';
     }
 
     public function getSchema(): array
@@ -38,6 +40,10 @@ class RenewSubscriptionsTool implements ToolContract, ToolMetadataContract
             'type' => 'object',
             'properties' => [
                 'connection_id' => ['type' => 'integer', 'description' => 'Optional. Default: erste aktive microsoft365-Connection.'],
+                'force_recreate' => [
+                    'type' => 'boolean',
+                    'description' => 'Default: false. Wenn true, werden alle konfigurierten Resources neu angelegt, auch wenn die Subscription gar nicht mehr in credentials steht.',
+                ],
             ],
         ];
     }
@@ -62,22 +68,46 @@ class RenewSubscriptionsTool implements ToolContract, ToolMetadataContract
             return ToolResult::error('NOT_FOUND', 'Keine passende microsoft365-Connection gefunden.');
         }
 
+        $service = app(Microsoft365SubscriptionService::class);
+        $forceRecreate = (bool) ($arguments['force_recreate'] ?? false);
+
         try {
-            $renewed = app(Microsoft365SubscriptionService::class)->renewSubscriptions($connection);
+            $renewed = $service->renewSubscriptions($connection);
+
+            // Bei force_recreate: zusätzlich gewünschte Resources prüfen und
+            // fehlende neu anlegen. Schließt die Lücke, wenn renew nur über
+            // credentials.subscriptions iteriert und einige da gar nicht
+            // mehr drin sind.
+            $created = [];
+            if ($forceRecreate) {
+                $wanted = $service->getSubscriptionResources($connection);
+                $haveResources = array_map(fn ($s) => $s['resource'] ?? null, $renewed);
+                $missing = array_values(array_filter(
+                    $wanted,
+                    fn ($r) => !in_array($r['resource'] ?? null, $haveResources, true),
+                ));
+                if (!empty($missing)) {
+                    $created = $service->createSubscriptions($connection, $missing);
+                }
+            }
         } catch (\Throwable $e) {
             return ToolResult::error('EXECUTION_ERROR', 'Renewal fehlgeschlagen: ' . $e->getMessage());
         }
 
+        $mapper = fn ($s) => [
+            'resource' => $s['resource'] ?? null,
+            'change_types' => $s['change_types'] ?? null,
+            'expires_at' => isset($s['expires_at']) ? date('Y-m-d H:i:s', $s['expires_at']) : null,
+            'shared_mailbox' => $s['shared_mailbox'] ?? null,
+            'app_level' => $s['app_level'] ?? false,
+        ];
+
         return ToolResult::success([
             'connection_id' => $connection->id,
             'renewed_count' => count($renewed),
-            'subscriptions' => array_map(fn ($s) => [
-                'resource' => $s['resource'] ?? null,
-                'change_types' => $s['change_types'] ?? null,
-                'expires_at' => isset($s['expires_at']) ? date('Y-m-d H:i:s', $s['expires_at']) : null,
-                'shared_mailbox' => $s['shared_mailbox'] ?? null,
-                'app_level' => $s['app_level'] ?? false,
-            ], $renewed),
+            'created_count' => count($created),
+            'renewed' => array_map($mapper, $renewed),
+            'newly_created' => array_map($mapper, $created),
         ]);
     }
 
