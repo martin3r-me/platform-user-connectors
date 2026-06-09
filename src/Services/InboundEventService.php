@@ -11,6 +11,7 @@ use Platform\UserConnectors\Jobs\FetchCallRecordingJob;
 use Platform\UserConnectors\Models\UserConnectorCallSession;
 use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
+use Platform\UserConnectors\Models\UserConnectorChatMessage;
 use Platform\UserConnectors\Models\UserConnectorMailSession;
 use Platform\UserConnectors\Models\UserConnectorMeetingSession;
 use Platform\UserConnectors\Models\UserConnectorMessageSession;
@@ -232,10 +233,38 @@ class InboundEventService
             'meta' => $meta,
         ];
 
-        UserConnectorMailSession::updateOrCreate(
+        $wasExisting = UserConnectorMailSession::where('external_mail_id', $event->external_id)->exists();
+
+        $session = UserConnectorMailSession::updateOrCreate(
             ['external_mail_id' => $event->external_id],
             $data,
         );
+
+        // Inbox-Reaktivierung: wenn eine bestehende Mail in Outlook wieder
+        // als ungelesen markiert wird (mail.updated mit is_read=false),
+        // ist das ein klares User-Signal "ich will das nochmal sehen".
+        // Setze das zugehörige Inbox-Item zurück auf new, falls es vorher
+        // bereits abgearbeitet (done/ignored) wurde.
+        if ($wasExisting && $eventType === 'mail.updated' && !$isRead) {
+            try {
+                if (\Illuminate\Support\Facades\Schema::hasTable('inbox_items')) {
+                    \Illuminate\Support\Facades\DB::table('inbox_items')
+                        ->where('source_type', 'user_connector_mail_session')
+                        ->where('source_id', $session->id)
+                        ->whereIn('status', ['done', 'ignored'])
+                        ->update([
+                            'status' => 'new',
+                            'handled_at' => null,
+                            'updated_at' => now(),
+                        ]);
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('UserConnectors: inbox reactivation failed', [
+                    'session_id' => $session->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     /**
@@ -346,14 +375,6 @@ class InboundEventService
 
     protected function doUpdateMessageSession(UserConnectorInboundEvent $event): void
     {
-        // Messages are immutable — skip if already exists for this connection
-        if (UserConnectorMessageSession::where('external_message_id', $event->external_id)
-            ->where('connection_id', $event->connection_id)
-            ->exists()
-        ) {
-            return;
-        }
-
         // After enrichment, data lives in $event->meta
         $meta = $event->meta ?? [];
         $eventType = $event->event_type;
@@ -362,10 +383,7 @@ class InboundEventService
 
         // Skip non-message Teams events ("messageType: unknownFutureValue" =
         // Lifecycle/System-Events wie Meeting-Chat-Created, Member-Added,
-        // Topic-Set). Diese landen weiterhin im Event-Log
-        // (user_connector_inbound_events) — nur die strukturierte
-        // Message-Session bekommt sie nicht mehr, damit Konsumenten wie die
-        // Inbox keinen leeren Müll sehen.
+        // Topic-Set). Diese landen weiterhin im Event-Log.
         if ($messageType === 'teams_chat'
             && isset($meta['messageType'])
             && $meta['messageType'] !== 'message'
@@ -373,21 +391,105 @@ class InboundEventService
             return;
         }
 
-        UserConnectorMessageSession::create([
-            'connection_id' => $event->connection_id,
-            'connector_key' => $event->connector_key,
-            'external_message_id' => $event->external_id,
-            'message_type' => $messageType,
-            'direction' => $event->direction,
+        $chatId = $meta['chatId'] ?? null;
+        $externalMessageId = $event->external_id;
+
+        // Idempotenz: hat genau diese Message-ID schon einen Detail-Eintrag,
+        // skip — Webhooks duplizieren bei retries.
+        if ($externalMessageId && UserConnectorChatMessage::query()
+            ->whereHas('session', fn ($q) => $q->where('connection_id', $event->connection_id))
+            ->where('external_message_id', $externalMessageId)
+            ->exists()
+        ) {
+            return;
+        }
+
+        // Aggregation: für Teams-Chats existiert eine Session pro
+        // (chat_id, connection_id, message_type). Neue Nachrichten
+        // updaten diese Session und legen einen Detail-Eintrag in
+        // user_connector_chat_messages an. Für SMS (kein chat_id) fällt
+        // das auf das alte Verhalten zurück (1 Session pro Message).
+        $session = null;
+        if ($messageType === 'teams_chat' && $chatId) {
+            $session = UserConnectorMessageSession::query()
+                ->where('connection_id', $event->connection_id)
+                ->where('message_type', 'teams_chat')
+                ->where('chat_id', $chatId)
+                ->orderByDesc('id')
+                ->first();
+        }
+
+        $headerFields = [
             'from_identifier' => $meta['fromDisplayName'] ?? $event->from_identifier,
             'from_user_id' => $meta['fromUserId'] ?? null,
             'to_identifier' => $meta['toNames'] ?? $event->to_identifier,
             'body_preview' => $meta['bodyPreview'] ?? null,
-            'chat_id' => $meta['chatId'] ?? null,
             'importance' => $meta['importance'] ?? null,
+            'direction' => $event->direction,
+            'external_message_id' => $externalMessageId,
+            'sent_at' => $event->event_timestamp,
+            'last_message_at' => $event->event_timestamp,
+            'meta' => $meta,
+        ];
+
+        if ($session) {
+            // Bestehende Session updaten — header-Felder bekommen den letzten
+            // Stand (latest sender, latest preview), message_count + 1.
+            $session->update(array_merge($headerFields, [
+                'message_count' => ($session->message_count ?? 1) + 1,
+            ]));
+        } else {
+            // Neue Session anlegen (chat_id unbekannt oder kein Teams-Chat).
+            $session = UserConnectorMessageSession::create(array_merge($headerFields, [
+                'connection_id' => $event->connection_id,
+                'connector_key' => $event->connector_key,
+                'message_type' => $messageType,
+                'chat_id' => $chatId,
+                'message_count' => 1,
+            ]));
+        }
+
+        // Jede Message wird zusätzlich in die Detail-Tabelle geschrieben.
+        // Damit hat der Show-View den vollen Thread-Verlauf — ohne dass
+        // die Aggregations-Row aufgebläht wird.
+        UserConnectorChatMessage::create([
+            'message_session_id' => $session->id,
+            'external_message_id' => $externalMessageId,
+            'from_identifier' => $meta['fromDisplayName'] ?? $event->from_identifier,
+            'from_user_id' => $meta['fromUserId'] ?? null,
+            'body_preview' => $meta['bodyPreview'] ?? null,
+            'body' => $meta['body'] ?? null,
+            'importance' => $meta['importance'] ?? null,
+            'direction' => $event->direction,
             'sent_at' => $event->event_timestamp,
             'meta' => $meta,
         ]);
+
+        // Inbox-Reaktivierung: wenn die Session schon mal als Inbox-Item
+        // abgearbeitet wurde und jetzt eine neue Nachricht im Thread
+        // kommt, hole das Item zurück — Chat-Aktivität verdient Sichtbarkeit.
+        if ($session->message_count > 1) {
+            try {
+                if (\Illuminate\Support\Facades\Schema::hasTable('inbox_items')) {
+                    \Illuminate\Support\Facades\DB::table('inbox_items')
+                        ->where('source_type', 'user_connector_message_session')
+                        ->where('source_id', $session->id)
+                        ->whereIn('status', ['done', 'ignored'])
+                        ->update([
+                            'status' => 'new',
+                            'handled_at' => null,
+                            'received_at' => $event->event_timestamp,
+                            'preview' => $meta['bodyPreview'] ?? null,
+                            'updated_at' => now(),
+                        ]);
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('UserConnectors: chat inbox reactivation failed', [
+                    'session_id' => $session->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     /**

@@ -24,11 +24,15 @@ class UserConnectorMessageSession extends Model
         'chat_id',
         'importance',
         'sent_at',
+        'message_count',
+        'last_message_at',
         'meta',
     ];
 
     protected $casts = [
         'sent_at' => 'datetime',
+        'last_message_at' => 'datetime',
+        'message_count' => 'integer',
         'meta' => 'array',
     ];
 
@@ -40,6 +44,12 @@ class UserConnectorMessageSession extends Model
     public function events(): HasMany
     {
         return $this->hasMany(UserConnectorInboundEvent::class, 'external_id', 'external_message_id');
+    }
+
+    public function messages(): HasMany
+    {
+        return $this->hasMany(UserConnectorChatMessage::class, 'message_session_id')
+            ->orderBy('sent_at');
     }
 
     public function isTeamsChat(): bool

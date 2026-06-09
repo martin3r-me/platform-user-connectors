@@ -162,6 +162,7 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\DeleteEventTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\RespondEventTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\FindAvailabilityTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\RenewSubscriptionsTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListRoomListsTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListRoomsTool());
         } catch (\Throwable $e) {
