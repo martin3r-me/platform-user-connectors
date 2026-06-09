@@ -67,7 +67,13 @@ class WebhookSubscriptionManager
     }
 
     /**
-     * Renew subscriptions for a connection and persist updated metadata.
+     * Renew subscriptions and reconcile against the configured resource list.
+     *
+     * Self-healing by default: after the connector's PATCH-then-recreate loop,
+     * we compare what came back against `getSubscriptionResources()` and create
+     * anything that's still missing. Without this step, a single failed renewal
+     * silently drops a resource from credentials forever (the symptom: only 2 of
+     * 5 subscriptions survive after expiry).
      */
     public function renewSubscriptions(UserConnectorConnection $connection): array
     {
@@ -85,6 +91,25 @@ class WebhookSubscriptionManager
         }
 
         $renewed = $connector->renewSubscriptions($connection);
+
+        // Reconcile: which configured resources are still missing?
+        $wanted = $connector->getSubscriptionResources($connection);
+        if (!empty($wanted)) {
+            $haveResources = array_map(fn ($s) => $s['resource'] ?? null, $renewed);
+            $missing = array_values(array_filter(
+                $wanted,
+                fn ($r) => !in_array($r['resource'] ?? null, $haveResources, true),
+            ));
+            if (!empty($missing)) {
+                Log::info('WebhookSubscriptionManager: Reconciling missing subscriptions', [
+                    'connection_id' => $connection->id,
+                    'missing_count' => count($missing),
+                    'missing_resources' => array_map(fn ($r) => $r['resource'] ?? null, $missing),
+                ]);
+                $created = $connector->createSubscriptions($connection, $missing);
+                $renewed = array_merge($renewed, $created);
+            }
+        }
 
         $credentials = $connection->credentials;
         $credentials['subscriptions'] = $renewed;
@@ -120,6 +145,23 @@ class WebhookSubscriptionManager
     public function hasExpiringSoon(UserConnectorConnection $connection, int $bufferSeconds = 3600): bool
     {
         $subscriptions = $connection->credentials['subscriptions'] ?? [];
+
+        // Configured but not present → treat as expiring (needs reconciliation).
+        // Catches the partial-loss case: 2 of 5 subs survived, the other 3 are
+        // gone forever unless we trigger renewal before the survivors expire.
+        $connectorKey = $connection->connector?->key;
+        if ($connectorKey && ($connector = $this->getConnector($connectorKey))) {
+            $wanted = $connector->getSubscriptionResources($connection);
+            if (!empty($wanted)) {
+                $haveResources = array_map(fn ($s) => $s['resource'] ?? null, $subscriptions);
+                foreach ($wanted as $w) {
+                    if (!in_array($w['resource'] ?? null, $haveResources, true)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
         if (empty($subscriptions)) {
             return false;
         }

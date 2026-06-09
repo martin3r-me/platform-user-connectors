@@ -49,11 +49,19 @@ class RenewWebhookSubscriptions extends Command
                     continue;
                 }
 
-                if (empty($subscriptions) && !$force) {
+                // Self-heal: empty subscriptions + configured resources → create.
+                // Was previously skipped without --force, which meant once a
+                // connection lost all subs, the scheduled job never recovered.
+                $hasConfiguredResources = !empty(
+                    $connection->credentials['settings']['subscription_resources'] ?? []
+                );
+                if (empty($subscriptions) && !$hasConfiguredResources && !$force) {
                     continue;
                 }
 
-                $needsRenewal = $force || $manager->hasExpiringSoon($connection, $buffer);
+                $needsRenewal = $force
+                    || empty($subscriptions)
+                    || $manager->hasExpiringSoon($connection, $buffer);
 
                 if (!$needsRenewal) {
                     continue;

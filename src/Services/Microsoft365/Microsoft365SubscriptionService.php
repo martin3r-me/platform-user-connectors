@@ -30,6 +30,22 @@ class Microsoft365SubscriptionService implements SubscribableConnector
         return config('user-connectors.microsoft365.subscriptions.max_lifetime_seconds', 244800);
     }
 
+    /**
+     * Per-resource max lifetime in seconds. Graph caps `/chats/getAllMessages`
+     * (Teams chats) at 60 minutes regardless of the configured global lifetime;
+     * patching beyond that produces a 400 and silently kills the subscription.
+     * Keep this in sync with createAppLevelSubscriptions().
+     */
+    protected function resourceMaxLifetime(array $sub): int
+    {
+        $resource = (string) ($sub['resource'] ?? '');
+        $isAppLevel = !empty($sub['app_level']);
+        if ($isAppLevel || str_contains($resource, '/chats/') || str_starts_with($resource, 'chats/')) {
+            return min($this->getMaxSubscriptionLifetime(), 3600);
+        }
+        return $this->getMaxSubscriptionLifetime();
+    }
+
     public function createSubscriptions(UserConnectorConnection $connection, array $resources): array
     {
         $token = $this->connectorService->getValidAccessToken($connection);
@@ -326,7 +342,6 @@ class Microsoft365SubscriptionService implements SubscribableConnector
         }
 
         $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
-        $expirationDateTime = now()->addSeconds($this->getMaxSubscriptionLifetime())->toIso8601String();
 
         $existingSubscriptions = $connection->credentials['subscriptions'] ?? [];
         $renewed = [];
@@ -336,6 +351,9 @@ class Microsoft365SubscriptionService implements SubscribableConnector
             $isShared = !empty($sub['shared_mailbox']);
             $isAppLevel = !empty($sub['app_level']);
             $token = ($isShared || $isAppLevel) ? ($appToken ?? $userToken) : $userToken;
+
+            // Per-resource lifetime — Teams chats max 60min, mail/calendar full.
+            $expirationDateTime = now()->addSeconds($this->resourceMaxLifetime($sub))->toIso8601String();
 
             $response = Http::withToken($token)
                 ->timeout(30)
