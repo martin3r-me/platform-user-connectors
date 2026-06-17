@@ -24,7 +24,9 @@ class SendTeamsChatTool implements ToolContract, ToolMetadataContract
     public function getDescription(): string
     {
         return 'Sendet eine Microsoft-Teams-Chat-Nachricht (1:1 oder Gruppe) über den User-OAuth-Token. '
-            . 'Erwartet die Graph-chat_id (i.d.R. aus user_connector_message_sessions.chat_id).';
+            . 'Erwartet die Graph-chat_id (i.d.R. aus user_connector_message_sessions.chat_id). '
+            . 'body wird per Default als HTML interpretiert und in Teams als Rich Text gerendert '
+            . '(<b>, <i>, <ul>/<li>, <pre>, <code>, <br>, <h3>). Für Plain-Text content_type="text" setzen.';
     }
 
     public function getSchema(): array
@@ -34,8 +36,8 @@ class SendTeamsChatTool implements ToolContract, ToolMetadataContract
             'properties' => [
                 'connection_id' => ['type' => 'integer', 'description' => 'Optionale Connection-ID.'],
                 'chat_id' => ['type' => 'string', 'description' => 'Graph chat_id (z.B. "19:...@unq.gbl.spaces").'],
-                'body' => ['type' => 'string', 'description' => 'Nachrichtentext.'],
-                'content_type' => ['type' => 'string', 'enum' => ['html', 'text'], 'description' => 'Default: text.'],
+                'body' => ['type' => 'string', 'description' => 'Nachrichtentext. Wird per Default als HTML gerendert — Plain-Text-Newlines (\n) werden in Teams kollabiert, also entweder HTML-Tags nutzen oder content_type="text" setzen.'],
+                'content_type' => ['type' => 'string', 'enum' => ['html', 'text'], 'description' => 'Default: html. "text" nur wenn Plain-Text gewünscht ist (selten der Fall — Teams rendert dann ohne Formatierung).'],
             ],
             'required' => ['chat_id', 'body'],
         ];
@@ -49,7 +51,7 @@ class SendTeamsChatTool implements ToolContract, ToolMetadataContract
 
         $chatId = trim((string) ($arguments['chat_id'] ?? ''));
         $body = (string) ($arguments['body'] ?? '');
-        $contentType = (string) ($arguments['content_type'] ?? 'text');
+        $contentType = (string) ($arguments['content_type'] ?? 'html');
 
         if ($chatId === '' || trim($body) === '') {
             return ToolResult::error('VALIDATION_ERROR', 'chat_id und body sind erforderlich.');
