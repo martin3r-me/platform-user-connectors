@@ -343,7 +343,20 @@ class Microsoft365SubscriptionService implements SubscribableConnector
 
         $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
 
-        $existingSubscriptions = $connection->credentials['subscriptions'] ?? [];
+        $existing = $connection->credentials['subscriptions'] ?? [];
+
+        // Stale Duplikate aus früheren Renewal-Bugs bereinigen. Sichtbar an
+        // callRecords (1h-Lifetime): bevor die Recreation auf single-sub
+        // umgestellt wurde, hat jeder PATCH-Fehler die komplette Shared/App/
+        // CallRecords-Bootstrap-Kaskade erneut gefeuert → bei Connection #14
+        // standen am Ende 16 callRecords-Subs in den Credentials, alle mit
+        // demselben Resource. Wir behalten pro Signatur den Eintrag mit der
+        // längsten Restlaufzeit und löschen den Rest auf Graph-Seite.
+        [$existingSubscriptions, $orphans] = $this->dedupeSubscriptions($existing);
+        if (!empty($orphans)) {
+            $this->deleteSubscriptionsFromGraph($connection, $orphans, $userToken, $appToken);
+        }
+
         $renewed = [];
 
         foreach ($existingSubscriptions as $sub) {
@@ -369,10 +382,16 @@ class Microsoft365SubscriptionService implements SubscribableConnector
                     'status' => $response->status(),
                 ]);
 
-                // Try to recreate
-                $resources = [['resource' => $sub['resource'], 'changeType' => $sub['change_types']]];
-                $recreated = $this->createSubscriptions($connection, $resources);
-                $renewed = array_merge($renewed, $recreated);
+                // EXAKT diese eine Subscription neu anlegen. Früher rief das
+                // createSubscriptions() mit einem Single-Resource-Array auf —
+                // intern feuert die Methode aber ZUSÄTZLICH den kompletten
+                // Shared/App/CallRecords-Bootstrap, der jedes Mal frische
+                // Duplikate produziert hat. recreateSingleSubscription() macht
+                // nur den einen POST mit dem richtigen Token + Webhook-URL.
+                $newSub = $this->recreateSingleSubscription($connection, $sub, $userToken, $appToken);
+                if ($newSub) {
+                    $renewed[] = $newSub;
+                }
                 continue;
             }
 
@@ -399,6 +418,154 @@ class Microsoft365SubscriptionService implements SubscribableConnector
         }
 
         return $renewed;
+    }
+
+    /**
+     * Recreate exactly one subscription after a failed PATCH. Picks the
+     * correct token (user/app) and webhook URL (default vs callRecords)
+     * based on the original sub's metadata — no implicit bootstrap of
+     * other resources.
+     *
+     * @return array<string,mixed>|null Subscription entry to persist, or
+     *     null if Graph rejected the request.
+     */
+    protected function recreateSingleSubscription(
+        UserConnectorConnection $connection,
+        array $sub,
+        ?string $userToken,
+        ?string $appToken,
+    ): ?array {
+        $isShared = !empty($sub['shared_mailbox']);
+        $isAppLevel = !empty($sub['app_level']);
+        $token = ($isShared || $isAppLevel) ? ($appToken ?? $userToken) : $userToken;
+
+        if (!$token) {
+            Log::warning('MS365: Kein Token für Subscription-Neuanlage', [
+                'connection_id' => $connection->id,
+                'resource' => $sub['resource'] ?? null,
+            ]);
+            return null;
+        }
+
+        $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
+        // callRecords haben einen eigenen Webhook-Endpunkt; alles andere
+        // landet auf dem zentralen MS365-Webhook.
+        $isCallRecords = ($sub['resource'] ?? '') === 'communications/callRecords';
+        $webhookUrl = $isCallRecords
+            ? route('user-connectors.webhooks.microsoft365.call-records')
+            : route('user-connectors.webhooks.microsoft365');
+
+        $clientState = Str::random(40);
+        $expirationDateTime = now()->addSeconds($this->resourceMaxLifetime($sub))->toIso8601String();
+
+        $response = Http::withToken($token)
+            ->timeout(30)
+            ->post($baseUrl . '/subscriptions', [
+                'changeType' => $sub['change_types'],
+                'notificationUrl' => $webhookUrl,
+                'resource' => $sub['resource'],
+                'expirationDateTime' => $expirationDateTime,
+                'clientState' => $clientState,
+            ]);
+
+        if (!$response->successful()) {
+            Log::error('MS365: Subscription-Neuanlage fehlgeschlagen', [
+                'connection_id' => $connection->id,
+                'resource' => $sub['resource'],
+                'status' => $response->status(),
+                'body' => mb_substr($response->body(), 0, 300),
+            ]);
+            return null;
+        }
+
+        $data = $response->json();
+        $newSub = [
+            'id' => $data['id'],
+            'resource' => $sub['resource'],
+            'change_types' => $sub['change_types'],
+            'expires_at' => \Carbon\Carbon::parse($data['expirationDateTime'])->timestamp,
+            'client_state' => $clientState,
+        ];
+        if ($isShared) {
+            $newSub['shared_mailbox'] = $sub['shared_mailbox'];
+        }
+        if ($isAppLevel) {
+            $newSub['app_level'] = true;
+        }
+
+        Log::info('MS365: Subscription neu angelegt nach Renewal-Fehler', [
+            'connection_id' => $connection->id,
+            'subscription_id' => $data['id'],
+            'resource' => $sub['resource'],
+        ]);
+
+        return $newSub;
+    }
+
+    /**
+     * Group subscriptions by their logical signature
+     * (resource + change_types + shared_mailbox + app_level). For each group
+     * keep the entry with the latest expires_at; return [keepers, orphans].
+     *
+     * @return array{0: array<int, array>, 1: array<int, array>}
+     */
+    protected function dedupeSubscriptions(array $subs): array
+    {
+        $groups = [];
+        foreach ($subs as $sub) {
+            $sig = ($sub['resource'] ?? '') . '|'
+                . ($sub['change_types'] ?? '') . '|'
+                . ($sub['shared_mailbox'] ?? '') . '|'
+                . (!empty($sub['app_level']) ? '1' : '0');
+            $groups[$sig][] = $sub;
+        }
+
+        $keepers = [];
+        $orphans = [];
+        foreach ($groups as $bucket) {
+            usort($bucket, fn ($a, $b) => ($b['expires_at'] ?? 0) <=> ($a['expires_at'] ?? 0));
+            $keepers[] = $bucket[0];
+            for ($i = 1, $n = count($bucket); $i < $n; $i++) {
+                $orphans[] = $bucket[$i];
+            }
+        }
+
+        return [$keepers, $orphans];
+    }
+
+    /**
+     * Best-effort DELETE on Graph for subs we no longer track. Failures are
+     * fine — a 404 just means the Graph-side sub had already expired.
+     */
+    protected function deleteSubscriptionsFromGraph(
+        UserConnectorConnection $connection,
+        array $subs,
+        ?string $userToken,
+        ?string $appToken,
+    ): void {
+        if (empty($subs)) {
+            return;
+        }
+        $baseUrl = config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0');
+        foreach ($subs as $sub) {
+            $isShared = !empty($sub['shared_mailbox']);
+            $isAppLevel = !empty($sub['app_level']);
+            $token = ($isShared || $isAppLevel) ? ($appToken ?? $userToken) : $userToken;
+            if (!$token || empty($sub['id'])) {
+                continue;
+            }
+            try {
+                Http::withToken($token)
+                    ->timeout(15)
+                    ->delete($baseUrl . '/subscriptions/' . $sub['id']);
+            } catch (\Throwable $e) {
+                // already-gone Graph-side, that's fine
+            }
+        }
+        Log::info('MS365: Duplicate Subscriptions bereinigt', [
+            'connection_id' => $connection->id,
+            'removed_count' => count($subs),
+        ]);
     }
 
     public function deleteSubscriptions(UserConnectorConnection $connection): void

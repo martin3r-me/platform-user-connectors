@@ -490,36 +490,47 @@ class WebhookController extends Controller
             // Determine direction for this user
             $direction = ($userMs365Id === $callerUserId) ? 'outbound' : 'inbound';
 
-            UserConnectorCallSession::create([
-                'connection_id' => $connection->id,
-                'connector_key' => 'microsoft365',
-                'external_call_id' => $callRecordId,
-                'direction' => $direction,
-                'status' => $status,
-                'from_number' => $fromDisplay,
-                'to_number' => $toDisplay,
-                'started_at' => $startDateTime,
-                'answered_at' => $status === 'completed' ? $startDateTime : null,
-                'ended_at' => $endDateTime,
-                'duration_seconds' => $status === 'completed' ? $durationSeconds : null,
-                'hangup_cause' => $hangupCause,
-                'meta' => [
-                    'callType' => $type,
-                    'modalities' => $record['modalities'] ?? [],
-                    'sessionCount' => count($sessions),
-                    'failureInfo' => $failureInfo,
-                    'organizer' => $record['organizer']['user']['displayName'] ?? null,
-                    'participants' => collect($record['participants'] ?? [])
-                        ->map(fn ($p) => $p['user']['displayName'] ?? $p['identity']['user']['displayName'] ?? null)
-                        ->filter()->values()->all(),
+            // firstOrCreate + Unique-Index auf (connection_id, external_call_id)
+            // killt die Race-Condition: bei mehreren callRecords-Subscriptions
+            // schickt Graph dieselbe Notification N-fach parallel — der
+            // exists-Check oben in microsoft365CallRecords() ist non-atomic
+            // und ließ alle N Inserts durchfallen. Jetzt gewinnt der erste,
+            // der Rest landet als no-op.
+            $session = UserConnectorCallSession::firstOrCreate(
+                [
+                    'connection_id' => $connection->id,
+                    'external_call_id' => $callRecordId,
                 ],
-            ]);
+                [
+                    'connector_key' => 'microsoft365',
+                    'direction' => $direction,
+                    'status' => $status,
+                    'from_number' => $fromDisplay,
+                    'to_number' => $toDisplay,
+                    'started_at' => $startDateTime,
+                    'answered_at' => $status === 'completed' ? $startDateTime : null,
+                    'ended_at' => $endDateTime,
+                    'duration_seconds' => $status === 'completed' ? $durationSeconds : null,
+                    'hangup_cause' => $hangupCause,
+                    'meta' => [
+                        'callType' => $type,
+                        'modalities' => $record['modalities'] ?? [],
+                        'sessionCount' => count($sessions),
+                        'failureInfo' => $failureInfo,
+                        'organizer' => $record['organizer']['user']['displayName'] ?? null,
+                        'participants' => collect($record['participants'] ?? [])
+                            ->map(fn ($p) => $p['user']['displayName'] ?? $p['identity']['user']['displayName'] ?? null)
+                            ->filter()->values()->all(),
+                    ],
+                ],
+            );
 
-            Log::info('MS365 CallRecords: CallSession erstellt', [
+            Log::info('MS365 CallRecords: CallSession ' . ($session->wasRecentlyCreated ? 'erstellt' : 'bereits vorhanden'), [
                 'callRecordId' => $callRecordId,
                 'connection_id' => $connection->id,
                 'direction' => $direction,
                 'status' => $status,
+                'session_id' => $session->id,
             ]);
         }
     }
