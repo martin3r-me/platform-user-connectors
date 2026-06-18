@@ -432,12 +432,32 @@ class InboundEventService
             'meta' => $meta,
         ];
 
+        // Stable chat display fields — set once at creation, refresh ONLY
+        // when the existing value is missing or topic genuinely changed.
+        // Stops the Inbox label from churning to the latest sender's name
+        // every time a new message lands.
+        $chatDisplayName = $meta['chatDisplayName'] ?? null;
+        $chatType = $meta['chatType'] ?? null;
+
         if ($session) {
             // Bestehende Session updaten — header-Felder bekommen den letzten
             // Stand (latest sender, latest preview), message_count + 1.
-            $session->update(array_merge($headerFields, [
+            $update = array_merge($headerFields, [
                 'message_count' => ($session->message_count ?? 1) + 1,
-            ]));
+            ]);
+            // Display nur ergänzen wenn noch leer (Backfill für vor-Migration-
+            // Sessions) oder wenn das Topic sich geändert hat (Group renamed).
+            if (empty($session->chat_display_name) && $chatDisplayName) {
+                $update['chat_display_name'] = $chatDisplayName;
+            } elseif ($chatDisplayName && $session->chat_type === 'group' && ($meta['chatTopic'] ?? null)) {
+                if ($session->chat_display_name !== $chatDisplayName) {
+                    $update['chat_display_name'] = $chatDisplayName;
+                }
+            }
+            if (empty($session->chat_type) && $chatType) {
+                $update['chat_type'] = $chatType;
+            }
+            $session->update($update);
         } else {
             // Neue Session anlegen (chat_id unbekannt oder kein Teams-Chat).
             $session = UserConnectorMessageSession::create(array_merge($headerFields, [
@@ -446,6 +466,8 @@ class InboundEventService
                 'message_type' => $messageType,
                 'chat_id' => $chatId,
                 'message_count' => 1,
+                'chat_display_name' => $chatDisplayName,
+                'chat_type' => $chatType,
             ]));
         }
 

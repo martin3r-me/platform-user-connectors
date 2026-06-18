@@ -366,10 +366,26 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
 
         // Fetch chat members for "An" field and fan-out
         $members = [];
+        $chatTopic = null;
+        $chatType = null;
         if ($chatId) {
             $membersUrl = "{$baseUrl}/chats/{$chatId}/members";
             $membersResponse = Http::withToken($token)->timeout(15)->get($membersUrl);
             $members = $membersResponse->successful() ? $membersResponse->json('value', []) : [];
+
+            // Chat-Metadaten holen — Graph kapselt topic + chatType separat
+            // unter /chats/{id}. Ohne diese können wir kein stabiles Display
+            // (DM-Partner vs. Gruppen-Topic) berechnen, weil das Message-
+            // Payload selbst diese Felder nicht trägt.
+            $chatUrl = "{$baseUrl}/chats/{$chatId}";
+            $chatResponse = Http::withToken($token)->timeout(15)->get($chatUrl, [
+                '$select' => 'id,topic,chatType',
+            ]);
+            if ($chatResponse->successful()) {
+                $chatData = $chatResponse->json();
+                $chatTopic = $chatData['topic'] ?? null;
+                $chatType = $chatData['chatType'] ?? null;
+            }
         }
 
         // "An" = all member display names except the sender
@@ -388,6 +404,19 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             ->filter(fn ($m) => $m['userId'])
             ->values()->all();
 
+        // Chat-Display berechnen: stabil pro Chat (im Gegensatz zu fromDisplay
+        // das pro Message wechselt). InboundEventService persistiert es als
+        // chat_display_name, damit die Inbox nicht den letzten Sender zeigt.
+        //   - oneOnOne: der EINE andere Teilnehmer
+        //   - group:    topic (falls gesetzt) sonst joined memberNames ohne self
+        //   - meeting:  topic falls vorhanden, sonst "Meeting-Chat"
+        $chatDisplayName = $this->computeChatDisplayName(
+            chatType: $chatType,
+            chatTopic: $chatTopic,
+            members: $memberNames,
+            selfUserId: $ms365UserId,
+        );
+
         return [
             'from' => $from,
             'to' => $toNames ?: null,
@@ -397,6 +426,9 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
             'meta' => [
                 'bodyPreview' => $bodyPreview,
                 'chatId' => $chatId,
+                'chatTopic' => $chatTopic,
+                'chatType' => $chatType,
+                'chatDisplayName' => $chatDisplayName,
                 'messageType' => $data['messageType'] ?? null,
                 'importance' => $data['importance'] ?? null,
                 'fromUserId' => $fromUserId,
@@ -406,6 +438,56 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
                 'memberNames' => $memberNames,
             ],
         ];
+    }
+
+    /**
+     * Stable per-chat display string. Falls back through chat-type-specific
+     * heuristics so the Inbox label remains useful even when topic is empty
+     * or chatType is missing (older subscriptions don't always return it).
+     *
+     * @param  array<int, array{userId: ?string, displayName: ?string}>  $members
+     */
+    protected function computeChatDisplayName(
+        ?string $chatType,
+        ?string $chatTopic,
+        array $members,
+        ?string $selfUserId,
+    ): ?string {
+        $topic = is_string($chatTopic) ? trim($chatTopic) : '';
+
+        if ($chatType === 'oneOnOne') {
+            foreach ($members as $m) {
+                if (!empty($m['userId']) && $m['userId'] !== $selfUserId && !empty($m['displayName'])) {
+                    return $m['displayName'];
+                }
+            }
+            return $topic !== '' ? $topic : null;
+        }
+
+        if ($chatType === 'meeting') {
+            return $topic !== '' ? $topic : 'Meeting-Chat';
+        }
+
+        // group, OR unknown chatType — prefer topic, then a joined member
+        // listing without self for context. Capped so a 20-people chat
+        // doesn't blow the Inbox row.
+        if ($topic !== '') {
+            return $topic;
+        }
+        $others = [];
+        foreach ($members as $m) {
+            if (!empty($m['userId']) && $m['userId'] !== $selfUserId && !empty($m['displayName'])) {
+                $others[] = $m['displayName'];
+            }
+        }
+        if (empty($others)) {
+            return null;
+        }
+        $joined = implode(', ', array_slice($others, 0, 3));
+        if (count($others) > 3) {
+            $joined .= ' +' . (count($others) - 3);
+        }
+        return 'Gruppe: ' . $joined;
     }
 
     /**

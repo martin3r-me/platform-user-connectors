@@ -22,6 +22,8 @@ class UserConnectorMessageSession extends Model
         'to_identifier',
         'body_preview',
         'chat_id',
+        'chat_display_name',
+        'chat_type',
         'importance',
         'sent_at',
         'message_count',
