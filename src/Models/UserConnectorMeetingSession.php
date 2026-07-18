@@ -15,6 +15,8 @@ class UserConnectorMeetingSession extends Model
         'connection_id',
         'connector_key',
         'external_event_id',
+        'series_master_id',
+        'occurrence_type',
         'direction',
         'status',
         'organizer_address',

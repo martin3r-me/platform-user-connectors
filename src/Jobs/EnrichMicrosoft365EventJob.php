@@ -257,7 +257,7 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
         $response = Http::withToken($token)
             ->timeout(15)
             ->get("{$baseUrl}/me/events/{$resourceId}", [
-                '$select' => 'id,subject,organizer,attendees,start,end,location,isOnlineMeeting,onlineMeetingUrl,bodyPreview,createdDateTime',
+                '$select' => 'id,subject,organizer,attendees,start,end,location,isOnlineMeeting,onlineMeetingUrl,bodyPreview,createdDateTime,seriesMasterId,type',
             ]);
 
         if (!$response->successful()) {
@@ -310,6 +310,11 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
                 'attendees' => $attendees,
                 'organizer' => $organizer,
                 'organizerName' => $organizerName,
+                // Serien-Identität (Phase B): seriesMasterId gruppiert alle
+                // Vorkommen einer Terminserie; type = singleInstance |
+                // occurrence | exception | seriesMaster.
+                'seriesMasterId' => $data['seriesMasterId'] ?? null,
+                'occurrenceType' => $data['type'] ?? null,
             ],
         ];
     }

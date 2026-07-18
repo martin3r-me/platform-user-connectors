@@ -25,7 +25,7 @@ class Microsoft365CalendarConnector implements CalendarConnector
             'enddatetime' => $to->toIso8601String(),
             '$top' => $top,
             '$orderby' => 'start/dateTime',
-            '$select' => 'id,subject,body,start,end,isAllDay,showAs,location,attendees,onlineMeeting,webLink',
+            '$select' => 'id,subject,body,start,end,isAllDay,showAs,location,attendees,onlineMeeting,webLink,seriesMasterId,type',
         ]);
 
         $events = array_map(
@@ -46,7 +46,7 @@ class Microsoft365CalendarConnector implements CalendarConnector
     public function getEvent(User $user, string $eventId): CalendarEvent
     {
         $data = $this->api->get($user, "/me/events/{$eventId}", [
-            '$select' => 'id,subject,body,start,end,isAllDay,showAs,location,attendees,onlineMeeting,webLink',
+            '$select' => 'id,subject,body,start,end,isAllDay,showAs,location,attendees,onlineMeeting,webLink,seriesMasterId,type',
         ]);
 
         return $this->mapEvent($data);
