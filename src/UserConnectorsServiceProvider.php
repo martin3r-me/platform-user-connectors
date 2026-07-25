@@ -107,12 +107,18 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $this->commands([
                 RenewWebhookSubscriptions::class,
                 Console\Commands\BackfillSessions::class,
+                Console\Commands\BackfillMeetingIcalUid::class,
             ]);
 
             $this->app->booted(function () {
                 $schedule = $this->app->make(Schedule::class);
                 $schedule->command('user-connectors:renew-webhook-subscriptions')
                     ->hourly()
+                    ->withoutOverlapping();
+                // Increment 3: Meeting-Sessions ohne iCalUId gezielt nachfetchen
+                // (bounded, selbst-stoppend). Danach kopiert inbox:backfill-identity.
+                $schedule->command('user-connectors:backfill-meeting-ical')
+                    ->everyFifteenMinutes()
                     ->withoutOverlapping();
             });
         }
