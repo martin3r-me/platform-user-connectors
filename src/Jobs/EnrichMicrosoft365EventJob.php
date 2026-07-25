@@ -257,7 +257,7 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
         $response = Http::withToken($token)
             ->timeout(15)
             ->get("{$baseUrl}/me/events/{$resourceId}", [
-                '$select' => 'id,subject,organizer,attendees,start,end,location,isOnlineMeeting,onlineMeetingUrl,bodyPreview,createdDateTime,seriesMasterId,type',
+                '$select' => 'id,iCalUId,subject,organizer,attendees,start,end,location,isOnlineMeeting,onlineMeetingUrl,bodyPreview,createdDateTime,seriesMasterId,type',
             ]);
 
         if (!$response->successful()) {
@@ -315,6 +315,9 @@ class EnrichMicrosoft365EventJob implements ShouldQueue
                 // occurrence | exception | seriesMaster.
                 'seriesMasterId' => $data['seriesMasterId'] ?? null,
                 'occurrenceType' => $data['type'] ?? null,
+                // iCalUId: über Postfächer UND Serien-Vorkommen stabile Identität —
+                // der Schlüssel für die geteilte Meeting-Instanz.
+                'iCalUId' => $data['iCalUId'] ?? null,
             ],
         ];
     }

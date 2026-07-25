@@ -337,6 +337,7 @@ class InboundEventService
             'connection_id' => $event->connection_id,
             'connector_key' => $event->connector_key,
             'series_master_id' => $meta['seriesMasterId'] ?? null,
+            'ical_uid' => $meta['iCalUId'] ?? null,
             'occurrence_type' => $meta['occurrenceType'] ?? null,
             'direction' => $direction,
             'status' => $status,

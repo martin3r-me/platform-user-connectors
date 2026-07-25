@@ -16,6 +16,7 @@ class UserConnectorMeetingSession extends Model
         'connector_key',
         'external_event_id',
         'series_master_id',
+        'ical_uid',
         'occurrence_type',
         'direction',
         'status',
