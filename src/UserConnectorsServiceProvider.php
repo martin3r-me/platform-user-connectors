@@ -151,6 +151,7 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\SendMailTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ReplyMailTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ForwardMailTool());
+            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\GetMailAttachmentContentTool());
 
             // Microsoft 365 — Teams (Chats + Channels)
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\SendTeamsChatTool());
