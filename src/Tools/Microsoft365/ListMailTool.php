@@ -69,6 +69,10 @@ class ListMailTool implements ToolContract, ToolMetadataContract
             return ToolResult::success([
                 'messages' => array_map(fn ($m) => $m->toArray(), $result['messages']),
                 'pagination' => $result['pagination']->toArray(),
+                'filters' => [
+                    'folder' => $arguments['folder'] ?? null,
+                    'is_read' => $arguments['is_read'] ?? null,
+                ],
             ]);
         } catch (\Throwable $e) {
             return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
