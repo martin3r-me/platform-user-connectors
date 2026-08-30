@@ -190,6 +190,25 @@ class Microsoft365MailConnector implements MessageConnector
         );
     }
 
+    /**
+     * Fetch a single attachment's content via Graph. For fileAttachments,
+     * Graph returns contentBytes (base64) directly on the attachment resource —
+     * no separate binary download needed.
+     */
+    public function getAttachmentContent(User $user, string $messageId, string $attachmentId): array
+    {
+        $data = $this->api->get($user, "/me/messages/{$messageId}/attachments/{$attachmentId}");
+
+        return [
+            'id' => $data['id'] ?? $attachmentId,
+            'name' => $data['name'] ?? null,
+            'content_type' => $data['contentType'] ?? null,
+            'size' => $data['size'] ?? null,
+            'is_inline' => $data['isInline'] ?? false,
+            'content_base64' => $data['contentBytes'] ?? null,
+        ];
+    }
+
     public function searchMessages(User $user, string $query, ?Pagination $pagination = null): array
     {
         $top = $pagination?->perPage ?? 25;
