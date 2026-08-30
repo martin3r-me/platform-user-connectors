@@ -27,6 +27,9 @@ class Microsoft365MailConnector implements MessageConnector
         }
         $query['$orderby'] = 'receivedDateTime desc';
         $query['$select'] = 'id,subject,bodyPreview,body,from,toRecipients,receivedDateTime,isRead,conversationId,hasAttachments';
+        // Attachment-Metadaten mitliefern (id/name/contentType/size), damit mail.list
+        // die attachment_id fürs Content-Tool bereitstellt, ohne contentBytes zu laden.
+        $query['$expand'] = 'attachments($select=id,name,contentType,size,isInline)';
 
         // Filter support
         $filterParts = [];
