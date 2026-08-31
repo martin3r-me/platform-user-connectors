@@ -51,6 +51,9 @@ class ListRoomsTool implements ToolContract, ToolMetadataContract
                 : null;
             return ToolResult::success([
                 'rooms' => $connector->listRooms($context->user, $roomListEmail ?: null),
+                'filters' => [
+                    'room_list_email' => $roomListEmail ?: null,
+                ],
             ]);
         } catch (\Throwable $e) {
             return ToolResult::error('EXECUTION_ERROR', 'Raum-Abruf fehlgeschlagen: ' . $e->getMessage());
