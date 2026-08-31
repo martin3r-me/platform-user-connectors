@@ -63,6 +63,10 @@ class ListEventsTool implements ToolContract, ToolMetadataContract
             return ToolResult::success([
                 'events' => array_map(fn ($e) => $e->toArray(), $result['events']),
                 'pagination' => $result['pagination']->toArray(),
+                'filters' => [
+                    'from' => $from->toIso8601String(),
+                    'to' => $to->toIso8601String(),
+                ],
             ]);
         } catch (\Throwable $e) {
             return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
