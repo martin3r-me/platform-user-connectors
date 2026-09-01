@@ -55,6 +55,7 @@ class Microsoft365TeamsConnector implements PresenceConnector
         $messages = array_map(fn (array $m) => [
             'id' => $m['id'] ?? '',
             'from' => $m['from']['user']['displayName'] ?? ($m['from']['user']['id'] ?? 'unknown'),
+            'from_id' => $m['from']['user']['id'] ?? null,
             'body' => $m['body']['content'] ?? '',
             'body_type' => strtolower($m['body']['contentType'] ?? 'text'),
             'created_at' => $m['createdDateTime'] ?? null,
@@ -273,6 +274,7 @@ class Microsoft365TeamsConnector implements PresenceConnector
         $messages = array_map(fn (array $m) => [
             'id' => $m['id'] ?? '',
             'from' => $m['from']['user']['displayName'] ?? ($m['from']['user']['id'] ?? 'unknown'),
+            'from_id' => $m['from']['user']['id'] ?? null,
             'body' => $m['body']['content'] ?? '',
             'body_type' => strtolower($m['body']['contentType'] ?? 'text'),
             'created_at' => $m['createdDateTime'] ?? null,
