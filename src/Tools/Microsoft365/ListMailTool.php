@@ -28,9 +28,10 @@ class ListMailTool implements ToolContract, ToolMetadataContract
             'properties' => [
                 'connection_id' => ['type' => 'integer', 'description' => 'Optionale Connection-ID.'],
                 'folder' => ['type' => 'string', 'description' => 'Mail-Ordner: inbox, sentitems, drafts, deleteditems. Standard: alle.'],
-                'is_read' => ['type' => 'string', 'description' => 'Filter: "true" oder "false".'],
+                'is_read' => ['type' => ['string', 'boolean'], 'description' => 'Filter: true/false (als Boolean oder String).'],
                 'page' => ['type' => 'integer', 'description' => 'Seite (ab 1). Standard: 1.'],
                 'per_page' => ['type' => 'integer', 'description' => 'Einträge pro Seite. Standard: 25.'],
+                'limit' => ['type' => 'integer', 'description' => 'Alias für per_page.'],
             ],
             'required' => [],
         ];
@@ -61,7 +62,7 @@ class ListMailTool implements ToolContract, ToolMetadataContract
 
             $pagination = new Pagination(
                 page: $arguments['page'] ?? 1,
-                perPage: $arguments['per_page'] ?? 25,
+                perPage: $arguments['per_page'] ?? $arguments['limit'] ?? 25,
             );
 
             $result = $connector->listMessages($context->user, $filters, $pagination);
