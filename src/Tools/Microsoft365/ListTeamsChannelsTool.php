@@ -16,7 +16,10 @@ class ListTeamsChannelsTool implements ToolContract, ToolMetadataContract
     public function getDescription(): string
     {
         return 'Listet alle Channels über alle Teams, in denen der User Mitglied ist. '
-            . 'Jeder Channel kommt mit team_id, team_name, channel_id — direkt verwendbar für Channel-Send.';
+            . 'Jeder Channel kommt mit team_id, team_name, channel_id — direkt verwendbar für Channel-Send. '
+            . 'Zusätzlich last_message_at (Zeitstempel der jüngsten Nachricht) als Aktivitäts-Proxy — '
+            . 'Graph liefert für Channels (anders als für Chats) keinen echten Unread-Status/-Count, '
+            . 'daher gibt es kein unread_count-Feld.';
     }
 
     public function getSchema(): array
