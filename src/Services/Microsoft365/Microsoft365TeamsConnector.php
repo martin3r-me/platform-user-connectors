@@ -34,11 +34,34 @@ class Microsoft365TeamsConnector implements PresenceConnector
                     'name' => $ch['displayName'] ?? '',
                     'description' => $ch['description'] ?? null,
                     'membership_type' => $ch['membershipType'] ?? 'standard',
+                    'last_message_at' => $this->fetchLastMessageAt($user, $teamId, $ch['id']),
                 ];
             }
         }
 
         return ['channels' => $channels];
+    }
+
+    /**
+     * Graph liefert für Channels (anders als für Chats) keinen Lesestatus
+     * und kein lastMessageReadDateTime — ein echter Unread-Indikator ist
+     * darüber nicht baubar. Als Proxy nehmen wir den Zeitstempel der
+     * jüngsten Nachricht: die Liste ist bereits standardmäßig nach
+     * Aktivität der Reply-Chain sortiert, $top=1 genügt also.
+     */
+    protected function fetchLastMessageAt(User $user, string $teamId, string $channelId): ?string
+    {
+        try {
+            $data = $this->api->get($user, "/teams/{$teamId}/channels/{$channelId}/messages", [
+                '$top' => 1,
+            ]);
+
+            $latest = $data['value'][0] ?? null;
+
+            return $latest['lastModifiedDateTime'] ?? $latest['createdDateTime'] ?? null;
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     public function getChannelMessages(User $user, string $channelId, ?Pagination $pagination = null): array
