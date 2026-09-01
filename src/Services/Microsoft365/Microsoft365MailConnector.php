@@ -36,8 +36,9 @@ class Microsoft365MailConnector implements MessageConnector
         if (!empty($filters['folder'])) {
             // Will use folder-specific endpoint
         }
-        if (!empty($filters['is_read'])) {
-            $filterParts[] = 'isRead eq ' . ($filters['is_read'] === 'true' ? 'true' : 'false');
+        if (array_key_exists('is_read', $filters) && $filters['is_read'] !== null && $filters['is_read'] !== '') {
+            $isRead = filter_var($filters['is_read'], FILTER_VALIDATE_BOOLEAN);
+            $filterParts[] = 'isRead eq ' . ($isRead ? 'true' : 'false');
         }
         if (!empty($filterParts)) {
             $query['$filter'] = implode(' and ', $filterParts);
