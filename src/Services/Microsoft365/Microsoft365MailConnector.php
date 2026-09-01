@@ -26,7 +26,12 @@ class Microsoft365MailConnector implements MessageConnector
             $query['$skip'] = $skip;
         }
         $query['$orderby'] = 'receivedDateTime desc';
-        $query['$select'] = 'id,subject,bodyPreview,body,from,toRecipients,receivedDateTime,isRead,conversationId,hasAttachments';
+        // body_format=preview spart den vollen HTML-Body (Haupttreiber der Response-Größe bei
+        // mehreren Mails) und liefert nur die von Graph ohnehin mitgelieferte bodyPreview.
+        $bodyFormat = $filters['body_format'] ?? 'full';
+        $query['$select'] = $bodyFormat === 'preview'
+            ? 'id,subject,bodyPreview,from,toRecipients,receivedDateTime,isRead,conversationId,hasAttachments'
+            : 'id,subject,bodyPreview,body,from,toRecipients,receivedDateTime,isRead,conversationId,hasAttachments';
         // Attachment-Metadaten mitliefern (id/name/contentType/size), damit mail.list
         // die attachment_id fürs Content-Tool bereitstellt, ohne contentBytes zu laden.
         $query['$expand'] = 'attachments($select=id,name,contentType,size,isInline)';

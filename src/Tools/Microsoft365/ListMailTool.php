@@ -32,6 +32,11 @@ class ListMailTool implements ToolContract, ToolMetadataContract
                 'page' => ['type' => 'integer', 'description' => 'Seite (ab 1). Standard: 1.'],
                 'per_page' => ['type' => 'integer', 'description' => 'Einträge pro Seite. Standard: 25.'],
                 'limit' => ['type' => 'integer', 'description' => 'Alias für per_page.'],
+                'body_format' => [
+                    'type' => 'string',
+                    'enum' => ['full', 'preview'],
+                    'description' => 'Body-Format: "full" (Standard, kompletter HTML-Body je Mail) oder "preview" (nur bodyPreview/Kurzform — spart Response-Größe beim Sichten mehrerer Mails).',
+                ],
             ],
             'required' => [],
         ];
@@ -59,6 +64,9 @@ class ListMailTool implements ToolContract, ToolMetadataContract
             if (isset($arguments['is_read'])) {
                 $filters['is_read'] = $arguments['is_read'];
             }
+            if (!empty($arguments['body_format'])) {
+                $filters['body_format'] = $arguments['body_format'];
+            }
 
             $pagination = new Pagination(
                 page: $arguments['page'] ?? 1,
@@ -73,6 +81,7 @@ class ListMailTool implements ToolContract, ToolMetadataContract
                 'filters' => [
                     'folder' => $arguments['folder'] ?? null,
                     'is_read' => $arguments['is_read'] ?? null,
+                    'body_format' => $arguments['body_format'] ?? 'full',
                 ],
             ]);
         } catch (\Throwable $e) {
