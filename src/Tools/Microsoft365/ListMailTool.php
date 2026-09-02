@@ -18,7 +18,7 @@ class ListMailTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Listet E-Mails aus dem Outlook-Postfach des Users auf. Unterstützt Ordner-Filter (inbox, sentitems, drafts), Pagination und Lese-Status-Filter.';
+        return 'Listet E-Mails aus dem Outlook-Postfach des Users auf. Unterstützt Ordner-Filter (inbox, sentitems, drafts), Volltextsuche (Absender/Betreff/Body via Microsoft Graph), Absender- und Zeitraum-Filter, Pagination und Lese-Status-Filter.';
     }
 
     public function getSchema(): array
@@ -28,14 +28,18 @@ class ListMailTool implements ToolContract, ToolMetadataContract
             'properties' => [
                 'connection_id' => ['type' => 'integer', 'description' => 'Optionale Connection-ID.'],
                 'folder' => ['type' => 'string', 'description' => 'Mail-Ordner: inbox, sentitems, drafts, deleteditems. Standard: alle.'],
+                'search' => ['type' => 'string', 'description' => 'Volltextsuche über Absender, Betreff und Body (serverseitig via Microsoft Graph $search). Bei gesetzter Suche entfällt die Sortierung nach Datum — Graph sortiert nach Relevanz.'],
+                'from' => ['type' => 'string', 'description' => 'Filter: exakte Absender-E-Mail-Adresse.'],
+                'date_from' => ['type' => 'string', 'description' => 'Filter: nur Mails empfangen ab diesem Zeitpunkt (ISO-8601 oder von Carbon parsbares Datum).'],
+                'date_to' => ['type' => 'string', 'description' => 'Filter: nur Mails empfangen bis zu diesem Zeitpunkt (ISO-8601 oder von Carbon parsbares Datum).'],
                 'is_read' => ['type' => ['string', 'boolean'], 'description' => 'Filter: true/false (als Boolean oder String).'],
                 'page' => ['type' => 'integer', 'description' => 'Seite (ab 1). Standard: 1.'],
                 'per_page' => ['type' => 'integer', 'description' => 'Einträge pro Seite. Standard: 25.'],
                 'limit' => ['type' => 'integer', 'description' => 'Alias für per_page.'],
                 'body_format' => [
                     'type' => 'string',
-                    'enum' => ['full', 'preview'],
-                    'description' => 'Body-Format: "full" (Standard, kompletter HTML-Body je Mail) oder "preview" (nur bodyPreview/Kurzform — spart Response-Größe beim Sichten mehrerer Mails).',
+                    'enum' => ['full', 'preview', 'none'],
+                    'description' => 'Body-Format: "full" (Standard, kompletter HTML-Body je Mail), "preview" (nur bodyPreview/Kurzform) oder "none" (kein Body-Feld — für reine Trefferlisten, spart am meisten Response-Größe).',
                 ],
             ],
             'required' => [],
@@ -61,6 +65,18 @@ class ListMailTool implements ToolContract, ToolMetadataContract
             if (!empty($arguments['folder'])) {
                 $filters['folder'] = $arguments['folder'];
             }
+            if (!empty($arguments['search'])) {
+                $filters['search'] = $arguments['search'];
+            }
+            if (!empty($arguments['from'])) {
+                $filters['from'] = $arguments['from'];
+            }
+            if (!empty($arguments['date_from'])) {
+                $filters['date_from'] = $arguments['date_from'];
+            }
+            if (!empty($arguments['date_to'])) {
+                $filters['date_to'] = $arguments['date_to'];
+            }
             if (isset($arguments['is_read'])) {
                 $filters['is_read'] = $arguments['is_read'];
             }
@@ -80,6 +96,10 @@ class ListMailTool implements ToolContract, ToolMetadataContract
                 'pagination' => $result['pagination']->toArray(),
                 'filters' => [
                     'folder' => $arguments['folder'] ?? null,
+                    'search' => $arguments['search'] ?? null,
+                    'from' => $arguments['from'] ?? null,
+                    'date_from' => $arguments['date_from'] ?? null,
+                    'date_to' => $arguments['date_to'] ?? null,
                     'is_read' => $arguments['is_read'] ?? null,
                     'body_format' => $arguments['body_format'] ?? 'full',
                 ],
@@ -93,7 +113,7 @@ class ListMailTool implements ToolContract, ToolMetadataContract
     {
         return [
             'category' => 'query',
-            'tags' => ['microsoft365', 'outlook', 'mail', 'email', 'list'],
+            'tags' => ['microsoft365', 'outlook', 'mail', 'email', 'list', 'search'],
             'read_only' => true,
             'requires_auth' => true,
             'risk_level' => 'safe',

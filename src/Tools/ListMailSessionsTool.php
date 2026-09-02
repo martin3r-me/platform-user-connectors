@@ -18,7 +18,7 @@ class ListMailSessionsTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Listet E-Mails des Users auf, standardmäßig nach Threads gruppiert (wie Gmail/Outlook). Pro Thread wird die neueste Mail mit message_count, unread_count und last_activity_at angezeigt. Threads mit neuer Aktivität stehen oben. Mit group_by_thread=false werden einzelne Mails aufgelistet.';
+        return 'Listet E-Mails des Users auf, standardmäßig nach Threads gruppiert (wie Gmail/Outlook). Pro Thread wird die neueste Mail mit message_count, unread_count und last_activity_at angezeigt. Threads mit neuer Aktivität stehen oben. Mit group_by_thread=false werden einzelne Mails aufgelistet. Unterstützt Volltextsuche (search) sowie Absender- und Zeitraum-Filter über die lokal gespeicherten Mails.';
     }
 
     public function getSchema(): array
@@ -29,6 +29,10 @@ class ListMailSessionsTool implements ToolContract, ToolMetadataContract
                 'connector_key' => ['type' => 'string', 'description' => 'Filter nach Connector: microsoft365.'],
                 'status' => ['type' => 'string', 'description' => 'Filter nach Status: new, read.'],
                 'direction' => ['type' => 'string', 'description' => 'Filter nach Richtung: inbound, outbound.'],
+                'search' => ['type' => 'string', 'description' => 'Volltextsuche (LIKE) über Betreff, Body/Preview und Absender (Adresse + Name) in der lokalen DB.'],
+                'from' => ['type' => 'string', 'description' => 'Filter (LIKE) auf Absender-Adresse oder -Name.'],
+                'date_from' => ['type' => 'string', 'description' => 'Filter: nur Mails ab diesem Zeitpunkt (received_at bzw. sent_at).'],
+                'date_to' => ['type' => 'string', 'description' => 'Filter: nur Mails bis zu diesem Zeitpunkt (received_at bzw. sent_at).'],
                 'is_read' => ['type' => 'boolean', 'description' => 'Filter nach Lese-Status. Bei Threads: true = alle gelesen, false = mindestens eine ungelesen.'],
                 'group_by_thread' => ['type' => 'boolean', 'description' => 'Thread-Gruppierung aktivieren. Standard: true. Bei false werden einzelne Mails aufgelistet.'],
                 'limit' => ['type' => 'integer', 'description' => 'Anzahl Ergebnisse. Standard: 25, Max: 100.'],
@@ -201,6 +205,41 @@ class ListMailSessionsTool implements ToolContract, ToolMetadataContract
             $query->where('direction', $arguments['direction']);
         }
 
+        if (!empty($arguments['search'])) {
+            $needle = $arguments['search'];
+            $query->where(function ($q) use ($needle) {
+                $q->where('subject', 'like', "%{$needle}%")
+                    ->orWhere('body_preview', 'like', "%{$needle}%")
+                    ->orWhere('body', 'like', "%{$needle}%")
+                    ->orWhere('from_address', 'like', "%{$needle}%")
+                    ->orWhere('from_name', 'like', "%{$needle}%");
+            });
+        }
+
+        if (!empty($arguments['from'])) {
+            $from = $arguments['from'];
+            $query->where(function ($q) use ($from) {
+                $q->where('from_address', 'like', "%{$from}%")
+                    ->orWhere('from_name', 'like', "%{$from}%");
+            });
+        }
+
+        if (!empty($arguments['date_from'])) {
+            $dateFrom = $arguments['date_from'];
+            $query->where(function ($q) use ($dateFrom) {
+                $q->where('received_at', '>=', $dateFrom)
+                    ->orWhere('sent_at', '>=', $dateFrom);
+            });
+        }
+
+        if (!empty($arguments['date_to'])) {
+            $dateTo = $arguments['date_to'];
+            $query->where(function ($q) use ($dateTo) {
+                $q->where('received_at', '<=', $dateTo)
+                    ->orWhere('sent_at', '<=', $dateTo);
+            });
+        }
+
         // is_read filter: in thread mode, skip here (handled via HAVING or post-filter)
         // in flat mode, apply directly
         if (isset($arguments['is_read']) && $mode === 'flat') {
@@ -212,7 +251,7 @@ class ListMailSessionsTool implements ToolContract, ToolMetadataContract
     {
         return [
             'category' => 'query',
-            'tags' => ['user-connectors', 'mail-sessions', 'email', 'microsoft365'],
+            'tags' => ['user-connectors', 'mail-sessions', 'email', 'microsoft365', 'search'],
             'read_only' => true,
             'requires_auth' => true,
             'risk_level' => 'safe',
