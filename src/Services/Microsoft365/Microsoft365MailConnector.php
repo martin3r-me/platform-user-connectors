@@ -25,28 +25,44 @@ class Microsoft365MailConnector implements MessageConnector
         if ($skip > 0) {
             $query['$skip'] = $skip;
         }
-        $query['$orderby'] = 'receivedDateTime desc';
-        // body_format=preview spart den vollen HTML-Body (Haupttreiber der Response-Größe bei
-        // mehreren Mails) und liefert nur die von Graph ohnehin mitgelieferte bodyPreview.
+        // body_format=preview/none sparen den vollen HTML-Body (Haupttreiber der Response-Größe
+        // bei mehreren Mails); "none" lässt auch bodyPreview weg für reine Trefferlisten.
         $bodyFormat = $filters['body_format'] ?? 'full';
-        $query['$select'] = $bodyFormat === 'preview'
-            ? 'id,subject,bodyPreview,from,toRecipients,receivedDateTime,isRead,conversationId,hasAttachments'
-            : 'id,subject,bodyPreview,body,from,toRecipients,receivedDateTime,isRead,conversationId,hasAttachments';
+        $query['$select'] = match ($bodyFormat) {
+            'none' => 'id,subject,from,toRecipients,receivedDateTime,isRead,conversationId,hasAttachments',
+            'preview' => 'id,subject,bodyPreview,from,toRecipients,receivedDateTime,isRead,conversationId,hasAttachments',
+            default => 'id,subject,bodyPreview,body,from,toRecipients,receivedDateTime,isRead,conversationId,hasAttachments',
+        };
         // Attachment-Metadaten mitliefern (id/name/contentType/size), damit mail.list
         // die attachment_id fürs Content-Tool bereitstellt, ohne contentBytes zu laden.
         $query['$expand'] = 'attachments($select=id,name,contentType,size,isInline)';
 
         // Filter support
         $filterParts = [];
-        if (!empty($filters['folder'])) {
-            // Will use folder-specific endpoint
-        }
         if (array_key_exists('is_read', $filters) && $filters['is_read'] !== null && $filters['is_read'] !== '') {
             $isRead = filter_var($filters['is_read'], FILTER_VALIDATE_BOOLEAN);
             $filterParts[] = 'isRead eq ' . ($isRead ? 'true' : 'false');
         }
+        if (!empty($filters['from'])) {
+            $filterParts[] = "from/emailAddress/address eq '" . str_replace("'", "''", $filters['from']) . "'";
+        }
+        if (!empty($filters['date_from'])) {
+            $filterParts[] = 'receivedDateTime ge ' . Carbon::parse($filters['date_from'])->toIso8601String();
+        }
+        if (!empty($filters['date_to'])) {
+            $filterParts[] = 'receivedDateTime le ' . Carbon::parse($filters['date_to'])->toIso8601String();
+        }
         if (!empty($filterParts)) {
             $query['$filter'] = implode(' and ', $filterParts);
+        }
+
+        // $search deckt Absender, Betreff und Body serverseitig ab (Graph-Volltextsuche).
+        // Graph sortiert $search-Ergebnisse nach Relevanz — $orderby ist damit inkompatibel
+        // und wird nur ohne Suche gesetzt.
+        if (!empty($filters['search'])) {
+            $query['$search'] = '"' . str_replace('"', '\"', $filters['search']) . '"';
+        } else {
+            $query['$orderby'] = 'receivedDateTime desc';
         }
 
         $folder = $filters['folder'] ?? null;
