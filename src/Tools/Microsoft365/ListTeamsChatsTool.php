@@ -43,7 +43,7 @@ class ListTeamsChatsTool implements ToolContract, ToolMetadataContract
 
     public function getMetadata(): array
     {
-        return ['category' => 'inspection', 'tags' => ['microsoft365', 'teams', 'chats', 'list'],
+        return ['category' => 'inspection', 'tags' => ['microsoft365', 'teams', 'chats', 'list', 'channel:teams-chat', 'action:list'],
             'read_only' => true, 'requires_auth' => true, 'risk_level' => 'read', 'idempotent' => true,
             'cost_class' => 'external_api_free'];
     }

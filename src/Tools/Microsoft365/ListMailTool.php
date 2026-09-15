@@ -113,7 +113,7 @@ class ListMailTool implements ToolContract, ToolMetadataContract
     {
         return [
             'category' => 'query',
-            'tags' => ['microsoft365', 'outlook', 'mail', 'email', 'list', 'search'],
+            'tags' => ['microsoft365', 'outlook', 'mail', 'email', 'list', 'search', 'channel:mail', 'action:list', 'action:search'],
             'read_only' => true,
             'requires_auth' => true,
             'risk_level' => 'safe',
