@@ -47,7 +47,7 @@ class ListTeamsChannelsTool implements ToolContract, ToolMetadataContract
 
     public function getMetadata(): array
     {
-        return ['category' => 'inspection', 'tags' => ['microsoft365', 'teams', 'channels', 'list'],
+        return ['category' => 'inspection', 'tags' => ['microsoft365', 'teams', 'channels', 'list', 'channel:teams-channel', 'action:list'],
             'read_only' => true, 'requires_auth' => true, 'risk_level' => 'read', 'idempotent' => true,
             'cost_class' => 'external_api_free'];
     }
