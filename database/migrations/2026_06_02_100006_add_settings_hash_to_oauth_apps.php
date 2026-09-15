@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::hasColumn('user_connector_oauth_apps', 'settings_hash')) {
+            return;
+        }
+
         Schema::table('user_connector_oauth_apps', function (Blueprint $table) {
             $table->string('settings_hash')->nullable()->after('settings');
         });
@@ -15,6 +19,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (! Schema::hasColumn('user_connector_oauth_apps', 'settings_hash')) {
+            return;
+        }
+
         Schema::table('user_connector_oauth_apps', function (Blueprint $table) {
             $table->dropColumn('settings_hash');
         });
