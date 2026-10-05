@@ -34,6 +34,7 @@ class GetMailAttachmentContentTool implements ToolContract, ToolMetadataContract
                 'connection_id' => ['type' => 'integer', 'description' => 'Optionale Connection-ID.'],
                 'external_mail_id' => ['type' => 'string', 'description' => 'MS-Graph Message-ID der Mail (i.d.R. aus user_connector_mail_sessions.external_mail_id).'],
                 'attachment_id' => ['type' => 'string', 'description' => 'MS-Graph Attachment-ID.'],
+                'parse_spreadsheet' => ['type' => 'boolean', 'description' => 'Optional: xlsx/xls-Anhänge serverseitig parsen und statt Base64 strukturierte Sheets/Rows (content_base64 entfällt) zurückgeben.'],
             ],
             'required' => ['external_mail_id', 'attachment_id'],
         ];
@@ -61,6 +62,17 @@ class GetMailAttachmentContentTool implements ToolContract, ToolMetadataContract
             }
 
             $attachment = $connector->getAttachmentContent($context->user, $externalMailId, $attachmentId);
+
+            if (!empty($arguments['parse_spreadsheet'])) {
+                $name = (string) ($attachment['name'] ?? '');
+                if (!preg_match('/\.xlsx?$/i', $name) || empty($attachment['content_base64'])) {
+                    return ToolResult::error('VALIDATION_ERROR', 'parse_spreadsheet erfordert einen xlsx/xls-Anhang mit Inhalt.');
+                }
+                $parsed = app(\Platform\Core\Services\SpreadsheetParserService::class)
+                    ->parse(base64_decode($attachment['content_base64'], true) ?: '', $name);
+                unset($attachment['content_base64']);
+                $attachment['sheets'] = $parsed['sheets'];
+            }
 
             return ToolResult::success(['attachment' => $attachment]);
         } catch (\Throwable $e) {
