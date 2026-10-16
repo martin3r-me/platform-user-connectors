@@ -98,13 +98,31 @@ class Microsoft365MailConnector implements MessageConnector
         return $this->mapMessage($data);
     }
 
-    public function sendMessage(User $user, string $to, string $subject, string $body, array $attachments = []): Message
+    /**
+     * Body für Graph (contentType HTML) aufbereiten. bodyType 'html' = unverändert,
+     * 'text' = escapen + Zeilenumbrüche als <br>; null/auto = Text, sofern keine
+     * HTML-Tags erkennbar sind (HTML ignoriert sonst \n und zieht alles zusammen, #934).
+     */
+    public static function normalizeBody(string $body, ?string $bodyType = null): string
+    {
+        $type = $bodyType !== null ? strtolower(trim($bodyType)) : 'auto';
+        if ($type === 'auto' || $type === '') {
+            $type = preg_match('/<\/?[a-z][a-z0-9]*(\s[^>]*)?>/i', $body) ? 'html' : 'text';
+        }
+        if ($type === 'html') {
+            return $body;
+        }
+
+        return nl2br(htmlspecialchars($body, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), false);
+    }
+
+    public function sendMessage(User $user, string $to, string $subject, string $body, array $attachments = [], ?string $bodyType = null): Message
     {
         $message = [
             'subject' => $subject,
             'body' => [
                 'contentType' => 'HTML',
-                'content' => $body,
+                'content' => self::normalizeBody($body, $bodyType),
             ],
             'toRecipients' => array_map(fn (string $addr) => [
                 'emailAddress' => ['address' => $addr],
@@ -143,12 +161,12 @@ class Microsoft365MailConnector implements MessageConnector
      * Empfänger (außer dem Absender) bleiben dran. Override mit replyAll=false
      * für eine Privat-Antwort nur an den Absender.
      */
-    public function replyToMessage(User $user, string $messageId, string $body, array $attachments = [], bool $replyAll = true): Message
+    public function replyToMessage(User $user, string $messageId, string $body, array $attachments = [], bool $replyAll = true, ?string $bodyType = null): Message
     {
         $endpoint = $replyAll ? 'replyAll' : 'reply';
 
         $payload = [
-            'comment' => $body,
+            'comment' => self::normalizeBody($body, $bodyType),
         ];
 
         $this->api->post($user, "/me/messages/{$messageId}/{$endpoint}", $payload);
@@ -178,7 +196,7 @@ class Microsoft365MailConnector implements MessageConnector
      *
      * @param array<int, string> $toAddresses
      */
-    public function forwardMessage(User $user, string $messageId, array $toAddresses, string $comment = ''): Message
+    public function forwardMessage(User $user, string $messageId, array $toAddresses, string $comment = '', ?string $bodyType = null): Message
     {
         $recipients = array_values(array_filter(array_map(
             fn ($addr) => is_string($addr) && trim($addr) !== ''
@@ -192,7 +210,7 @@ class Microsoft365MailConnector implements MessageConnector
         }
 
         $payload = [
-            'comment' => $comment,
+            'comment' => self::normalizeBody($comment, $bodyType),
             'toRecipients' => $recipients,
         ];
 
