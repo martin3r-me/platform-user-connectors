@@ -17,7 +17,7 @@ class SendMailTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Sendet eine E-Mail über das Outlook-Konto des Users. Unterstützt HTML-Body und mehrere Empfänger (kommagetrennt).';
+        return 'Sendet eine E-Mail über das Outlook-Konto des Users. Unterstützt HTML- und Plain-Text-Body (body_type, Default automatisch) und mehrere Empfänger (kommagetrennt).';
     }
 
     public function getSchema(): array
@@ -28,7 +28,8 @@ class SendMailTool implements ToolContract, ToolMetadataContract
                 'connection_id' => ['type' => 'integer', 'description' => 'Optionale Connection-ID.'],
                 'to' => ['type' => 'string', 'description' => 'Empfänger E-Mail-Adresse(n), kommagetrennt.'],
                 'subject' => ['type' => 'string', 'description' => 'Betreff der E-Mail.'],
-                'body' => ['type' => 'string', 'description' => 'Inhalt der E-Mail (HTML erlaubt).'],
+                'body' => ['type' => 'string', 'description' => 'Inhalt der E-Mail (HTML oder Plain Text, siehe body_type).'],
+                'body_type' => ['type' => 'string', 'enum' => ['text', 'html'], 'description' => 'Optional. text = Plain Text (Zeilenumbrüche bleiben erhalten), html = unverändert. Default: automatisch — ohne HTML-Tags im Body wird Plain Text angenommen.'],
             ],
             'required' => ['to', 'subject', 'body'],
         ];
@@ -54,6 +55,8 @@ class SendMailTool implements ToolContract, ToolMetadataContract
                 $arguments['to'],
                 $arguments['subject'],
                 $arguments['body'],
+                [],
+                $arguments['body_type'] ?? null,
             );
 
             return ToolResult::success([

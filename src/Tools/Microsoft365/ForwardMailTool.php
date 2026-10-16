@@ -42,6 +42,7 @@ class ForwardMailTool implements ToolContract, ToolMetadataContract
                     'items' => ['type' => 'string'],
                 ],
                 'comment' => ['type' => 'string', 'description' => 'Optionaler Intro-Text vor dem Original-Inhalt.'],
+                'body_type' => ['type' => 'string', 'enum' => ['text', 'html'], 'description' => 'Optional, Format des comment. text = Plain Text (Zeilenumbrüche bleiben erhalten), html = unverändert. Default: automatisch — ohne HTML-Tags im Body wird Plain Text angenommen.'],
             ],
             'required' => ['external_mail_id', 'to'],
         ];
@@ -74,6 +75,7 @@ class ForwardMailTool implements ToolContract, ToolMetadataContract
                 $externalMailId,
                 $to,
                 $comment,
+                $arguments['body_type'] ?? null,
             );
 
             return ToolResult::success([
