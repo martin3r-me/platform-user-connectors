@@ -33,17 +33,16 @@ class PlaudApiService
     }
 
     /**
-     * refresh_token → frisches Token-Set. Public client: Basic base64(client_id:)
-     * mit leerem Secret, Body trägt den refresh_token.
+     * refresh_token → frisches Token-Set. Wie das CLI: POST form-urlencoded mit
+     * Feld `refresh_token`, KEIN Authorization-Header (public client, der Refresh
+     * braucht keine Client-Credentials). JSON-Body würde 422 „refresh_token missing"
+     * geben — der Endpoint liest nur Form-Felder.
      *
      * @return array{access_token:string, refresh_token:?string, token_type:string, expires_in:?int}
      */
     public function refresh(string $refreshToken): array
     {
-        $basic = base64_encode($this->clientId . ':');
-
-        $res = Http::withHeaders(['Authorization' => 'Basic ' . $basic])
-            ->asJson()
+        $res = Http::asForm()
             ->acceptJson()
             ->post($this->refreshUrl, ['refresh_token' => $refreshToken]);
 
