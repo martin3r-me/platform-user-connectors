@@ -28,9 +28,11 @@ class PlaudSync extends Command
 
     public function handle(PlaudApiService $plaud): int
     {
-        $syncToolClass = '\\Platform\\Inbox\\Sources\\Plaud\\SyncTool';
+        // Stance 2: über whisper (quellen-agnostische Aufnahme-Schicht) statt direkt
+        // in die Inbox — Plaud wird eine WhisperRecording, der Observer ingestet.
+        $syncToolClass = '\\Platform\\Whisper\\Tools\\PlaudSyncTool';
         if (! class_exists($syncToolClass)) {
-            $this->warn('Inbox-Plaud-SyncTool nicht verfügbar — übersprungen.');
+            $this->warn('whisper.plaud.sync-Tool nicht verfügbar — übersprungen.');
             return self::SUCCESS;
         }
 
@@ -109,10 +111,10 @@ class PlaudSync extends Command
                 continue; // ohne Transkript kein sinnvoller Import
             }
 
+            // Summary holt die Inbox selbst (natives Enrichment) → hier nicht mehr nötig.
             $result = $tool->execute([
                 'file_id'      => $fileId,
                 'title'        => (string) ($file['name'] ?? $full['name'] ?? 'Plaud-Aufnahme'),
-                'note_content' => (string) ($plaud->summary($access, $full) ?? ''),
                 'segments'     => $segments,
                 'metadata'     => [
                     'start_at'      => $file['start_at'] ?? $full['start_at'] ?? null,
