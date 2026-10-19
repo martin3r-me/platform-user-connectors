@@ -134,6 +134,17 @@ class UserConnectorsServiceProvider extends ServiceProvider
             // Organization-Modul nicht geladen
         }
 
+        // Inbox-SourceDetail-Provider (Mail-Thread) an der Core-Naht registrieren.
+        // user-connectors besitzt die Mail-Daten, also liefert es das Kanal-Detail.
+        try {
+            if (class_exists(\Platform\Core\Inbox\Support\SourceDetailRegistry::class)) {
+                resolve(\Platform\Core\Inbox\Support\SourceDetailRegistry::class)
+                    ->register(new \Platform\UserConnectors\Inbox\MailSourceDetail());
+            }
+        } catch (\Throwable $e) {
+            // Core-Inbox nicht geladen
+        }
+
         // Config publish
         $this->publishes([
             __DIR__ . '/../config/user-connectors.php' => config_path('user-connectors.php'),
