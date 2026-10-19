@@ -44,8 +44,9 @@ class PlaudSync extends Command
             return self::SUCCESS;
         }
 
-        $from = now()->subDays((int) $this->option('days'))->toDateString();
-        $to = now()->toDateString();
+        // Plaud erwartet epoch MILLISEKUNDEN für start_date/end_date.
+        $from = now()->subDays((int) $this->option('days'))->getTimestampMs();
+        $to = now()->getTimestampMs();
         $imported = 0;
         $skipped = 0;
 
@@ -66,8 +67,8 @@ class PlaudSync extends Command
         PlaudApiService $plaud,
         string $syncToolClass,
         UserConnectorConnection $conn,
-        string $from,
-        string $to,
+        int $from,
+        int $to,
         int &$skipped,
     ): int {
         $creds = $conn->credentials ?? [];

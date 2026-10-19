@@ -2,48 +2,57 @@
 
 namespace Platform\UserConnectors\Services\Plaud;
 
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
 /**
  * HTTP-Client für die Plaud Consumer/Third-Party-API.
  *
- * Rekonstruiert aus @plaud-ai/cli (v0.3.15) — Plaud dokumentiert diese API nicht
- * offiziell (nur „Embedded"/Partner). Public OAuth-Client (PKCE, KEIN Secret):
- * der Refresh braucht nur client_id + refresh_token, kein Browser/Callback. Darum
- * reicht ein EINMAL geseedeter refresh_token (aus `plaud login`); dieser Service
- * refresht selbst und ruft die Daten-Endpoints.
+ * Rekonstruiert aus @plaud-ai/cli (v0.3.15) + lokal gegen die echte API verifiziert.
+ * Plaud dokumentiert diese API nicht offiziell (nur „Embedded"/Partner). Public
+ * OAuth-Client (PKCE, KEIN Secret): der Refresh braucht nur den refresh_token (als
+ * form-urlencoded, ohne Auth-Header). Ein EINMAL geseedeter refresh_token (aus
+ * `plaud login`) reicht; dieser Service refresht selbst und ruft die Daten-Endpoints.
  *
- * Bewusst token-basiert (keine Kopplung ans Connection-Model): der Sync-Command
- * holt den refresh_token aus der UserConnectorConnection, ruft hier refresh() und
- * nutzt das access_token für listFiles()/getFile().
+ * WICHTIG: Plaud sitzt hinter Cloudflare mit Browser-Signatur-Prüfung (Error 1010).
+ * Default-Clients (python-urllib, GuzzleHttp/x) werden geblockt → wir setzen einen
+ * Browser-User-Agent auf JEDEN Request. start_date/end_date sind epoch MILLISEKUNDEN.
+ *
+ * Token-basiert (keine Connection-Kopplung): der Sync-Command holt den refresh_token
+ * aus der UserConnectorConnection, ruft refresh() und nutzt das access_token.
  */
 class PlaudApiService
 {
     protected string $base;
     protected string $refreshUrl;
+    protected string $userAgent;
     protected string $clientId;
 
     public function __construct(?string $clientId = null, ?string $base = null, ?string $refreshUrl = null)
     {
         $this->base = rtrim($base ?? (string) config('user-connectors.plaud.api_base', 'https://platform.plaud.ai/developer/api'), '/');
         $this->refreshUrl = $refreshUrl ?? (string) config('user-connectors.plaud.refresh_url', 'https://platform.plaud.ai/developer/api/oauth/third-party/access-token/refresh');
-        // Öffentliche CLI-client_id als Default (kein Secret nötig).
         $this->clientId = $clientId ?: (string) config('user-connectors.plaud.client_id', 'client_f9e0b214-c11f-434b-8b95-c4497d1feb81');
+        $this->userAgent = (string) config('user-connectors.plaud.user_agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15');
+    }
+
+    /** Basis-Client mit Browser-UA (Cloudflare-Durchlass). */
+    protected function http(): PendingRequest
+    {
+        return Http::withHeaders(['User-Agent' => $this->userAgent]);
     }
 
     /**
-     * refresh_token → frisches Token-Set. Wie das CLI: POST form-urlencoded mit
-     * Feld `refresh_token`, KEIN Authorization-Header (public client, der Refresh
-     * braucht keine Client-Credentials). JSON-Body würde 422 „refresh_token missing"
-     * geben — der Endpoint liest nur Form-Felder.
+     * refresh_token → frisches Token-Set. Wie das CLI: POST form-urlencoded mit Feld
+     * `refresh_token`, KEIN Authorization-Header (public client). JSON-Body würde 422
+     * „refresh_token missing" geben.
      *
      * @return array{access_token:string, refresh_token:?string, token_type:string, expires_in:?int}
      */
     public function refresh(string $refreshToken): array
     {
-        $res = Http::asForm()
-            ->acceptJson()
+        $res = $this->http()->asForm()->acceptJson()
             ->post($this->refreshUrl, ['refresh_token' => $refreshToken]);
 
         if ($res->failed()) {
@@ -61,20 +70,21 @@ class PlaudApiService
     }
 
     /**
-     * Aufnahmen auflisten (neueste zuerst), optional nach Datum (YYYY-MM-DD).
+     * Aufnahmen auflisten (neueste zuerst). start_date/end_date sind epoch MILLISEKUNDEN
+     * (inklusive, optional).
      *
      * @return array<int, array<string,mixed>>  die `data`-Liste der Response
      */
-    public function listFiles(string $accessToken, ?string $startDate = null, ?string $endDate = null, int $page = 1, int $pageSize = 50): array
+    public function listFiles(string $accessToken, ?int $startMs = null, ?int $endMs = null, int $page = 1, int $pageSize = 50): array
     {
         $query = array_filter([
-            'start_date' => $startDate,
-            'end_date'   => $endDate,
+            'start_date' => $startMs,
+            'end_date'   => $endMs,
             'page'       => $page,
             'page_size'  => $pageSize,
         ], fn ($v) => $v !== null);
 
-        $res = Http::withToken($accessToken)->acceptJson()
+        $res = $this->http()->withToken($accessToken)->acceptJson()
             ->get($this->base . '/open/third-party/files/', $query);
 
         if ($res->failed()) {
@@ -88,13 +98,14 @@ class PlaudApiService
 
     /**
      * Voll-Record einer Aufnahme: Metadaten + source_list (Transkript-Blocks) +
-     * note_list (Summary etc.).
+     * note_list (Summary etc.). Felder: id, name, start_at, duration (ms),
+     * serial_number, presigned_url, source_list, note_list.
      *
      * @return array<string,mixed>
      */
     public function getFile(string $accessToken, string $fileId): array
     {
-        $res = Http::withToken($accessToken)->acceptJson()
+        $res = $this->http()->withToken($accessToken)->acceptJson()
             ->get($this->base . '/open/third-party/files/' . rawurlencode($fileId));
 
         if ($res->failed()) {
@@ -105,8 +116,9 @@ class PlaudApiService
     }
 
     /**
-     * Transkript-Block eines Files als dekodiertes Array (Utterances). `block` =
-     * 'transaction' (roh) | 'transaction_polish' | 'outline' | 'mark_memo'.
+     * Transkript-Block als dekodiertes Array (Utterances: content, start_time/end_time
+     * in ms, speaker, original_speaker — 1:1 das inbox.plaud.sync-Segment-Format).
+     * block = 'transaction' (roh, inline) | 'transaction_polish' | 'outline' | 'mark_memo'.
      *
      * @param  array<string,mixed>  $file  Ergebnis von getFile()
      * @return array<int, array<string,mixed>>
@@ -159,8 +171,7 @@ class PlaudApiService
 
         $link = $block['data_link'] ?? null;
         if (is_string($link) && $link !== '') {
-            // data_link zeigt meist auf signiertes Storage (ohne Auth); Token schadet nicht.
-            $res = Http::withToken($accessToken)->get($link);
+            $res = $this->http()->withToken($accessToken)->get($link);
 
             return $res->successful() ? (string) $res->body() : '';
         }
