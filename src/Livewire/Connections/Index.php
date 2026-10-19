@@ -177,8 +177,6 @@ class Index extends Component
             return;
         }
 
-        // Match auf den vollen Unique-Key (connector_id, owner_user_id, name) und
-        // Kollision (Doppel-Submit/Race) abfangen → bestehende Connection aktualisieren.
         $attrs = [
             'auth_scheme' => 'token',
             'status'      => 'active',
@@ -187,13 +185,17 @@ class Index extends Component
         ];
         $match = ['connector_id' => $connector->id, 'owner_user_id' => $user->id, 'name' => 'Plaud'];
 
-        try {
-            UserConnectorConnection::updateOrCreate($match, $attrs);
-        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
-            $conn = UserConnectorConnection::where($match)->first();
-            if ($conn) {
-                $conn->update($attrs);
+        // Model nutzt SoftDeletes, aber der Unique-Index (connector_id,owner_user_id,name)
+        // zählt soft-gelöschte Zeilen mit → withTrashed() suchen und ggf. wiederherstellen,
+        // sonst kollidiert ein Neu-Insert mit der „Leiche". Deckt auch Re-Connect ab.
+        $conn = UserConnectorConnection::withTrashed()->where($match)->first();
+        if ($conn) {
+            if ($conn->trashed()) {
+                $conn->restore();
             }
+            $conn->fill($attrs)->save();
+        } else {
+            UserConnectorConnection::create($match + $attrs);
         }
 
         $this->plaudModal = false;
