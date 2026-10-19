@@ -177,16 +177,24 @@ class Index extends Component
             return;
         }
 
-        UserConnectorConnection::updateOrCreate(
-            ['connector_id' => $connector->id, 'owner_user_id' => $user->id],
-            [
-                'name' => 'Plaud',
-                'auth_scheme' => 'token',
-                'status' => 'active',
-                'capabilities' => ['recordings'],
-                'credentials' => ['refresh_token' => $refreshToken],
-            ],
-        );
+        // Match auf den vollen Unique-Key (connector_id, owner_user_id, name) und
+        // Kollision (Doppel-Submit/Race) abfangen → bestehende Connection aktualisieren.
+        $attrs = [
+            'auth_scheme' => 'token',
+            'status'      => 'active',
+            'capabilities' => ['recordings'],
+            'credentials' => ['refresh_token' => $refreshToken],
+        ];
+        $match = ['connector_id' => $connector->id, 'owner_user_id' => $user->id, 'name' => 'Plaud'];
+
+        try {
+            UserConnectorConnection::updateOrCreate($match, $attrs);
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            $conn = UserConnectorConnection::where($match)->first();
+            if ($conn) {
+                $conn->update($attrs);
+            }
+        }
 
         $this->plaudModal = false;
         $this->plaudToken = '';
