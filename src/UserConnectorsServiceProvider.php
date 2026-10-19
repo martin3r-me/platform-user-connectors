@@ -108,6 +108,7 @@ class UserConnectorsServiceProvider extends ServiceProvider
                 RenewWebhookSubscriptions::class,
                 Console\Commands\BackfillSessions::class,
                 Console\Commands\BackfillMeetingIcalUid::class,
+                Console\Commands\PlaudSync::class,
             ]);
 
             $this->app->booted(function () {
@@ -119,6 +120,10 @@ class UserConnectorsServiceProvider extends ServiceProvider
                 // (bounded, selbst-stoppend). Danach kopiert inbox:backfill-identity.
                 $schedule->command('user-connectors:backfill-meeting-ical')
                     ->everyFifteenMinutes()
+                    ->withoutOverlapping();
+                // Plaud: neue Aufnahmen stündlich in die Inbox ziehen (dedup-idempotent).
+                $schedule->command('user-connectors:plaud-sync')
+                    ->hourly()
                     ->withoutOverlapping();
             });
         }
