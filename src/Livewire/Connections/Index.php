@@ -34,6 +34,10 @@ class Index extends Component
     public bool $settingsSubscriptionsEnabled = true;
     public bool $settingsRecordingsEnabled = true;
 
+    // Plaud: Token-einfügen-Connect (kein OAuth-Redirect — public client, Seed via `plaud login`).
+    public bool $plaudModal = false;
+    public string $plaudToken = '';
+
     public function render()
     {
         /** @var User $user */
@@ -133,6 +137,60 @@ class Index extends Component
             'messageSessions' => $messageSessions,
             'recentEvents' => $recentEvents,
         ])->layout('platform::layouts.app');
+    }
+
+    /** Plaud verbinden: Paste-Token-Dialog öffnen. */
+    public function openPlaudConnect(): void
+    {
+        $this->plaudToken = '';
+        $this->plaudModal = true;
+    }
+
+    public function closePlaudConnect(): void
+    {
+        $this->plaudModal = false;
+        $this->plaudToken = '';
+    }
+
+    /**
+     * Plaud-Connection aus eingefügtem Token anlegen/aktualisieren. Akzeptiert den
+     * rohen refresh_token ODER den kompletten Inhalt von ~/.plaud/tokens.json.
+     */
+    public function connectPlaud(): void
+    {
+        $user = auth()->user();
+        $raw = trim($this->plaudToken);
+        if (! $user || $raw === '') {
+            session()->flash('error', 'Bitte den Plaud refresh_token einfügen.');
+            return;
+        }
+
+        $refreshToken = $raw;
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded) && ! empty($decoded['refresh_token'])) {
+            $refreshToken = (string) $decoded['refresh_token'];
+        }
+
+        $connector = UserConnector::query()->where('key', 'plaud')->first();
+        if (! $connector) {
+            session()->flash('error', 'Plaud-Connector nicht verfügbar (Migration fehlt?).');
+            return;
+        }
+
+        UserConnectorConnection::updateOrCreate(
+            ['connector_id' => $connector->id, 'owner_user_id' => $user->id],
+            [
+                'name' => 'Plaud',
+                'auth_scheme' => 'token',
+                'status' => 'active',
+                'capabilities' => ['recordings'],
+                'credentials' => ['refresh_token' => $refreshToken],
+            ],
+        );
+
+        $this->plaudModal = false;
+        $this->plaudToken = '';
+        session()->flash('message', 'Plaud verbunden. Aufnahmen werden ab jetzt automatisch in den Eingang gezogen.');
     }
 
     /**

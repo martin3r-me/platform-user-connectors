@@ -54,6 +54,11 @@
                                     <x-ui-badge size="sm" variant="warning">Nicht konfiguriert</x-ui-badge>
                                 @endif
                             @endif
+                            @if ($connector->key === 'plaud')
+                                <x-ui-button variant="primary" size="sm" wire:click="openPlaudConnect">
+                                    Verbinden
+                                </x-ui-button>
+                            @endif
                         </div>
                         <p class="text-xs text-[var(--ui-muted)]">{{ $connector->meta['description'] ?? '' }}</p>
                         @if ($connector->capabilities)
@@ -614,6 +619,33 @@
                         <x-ui-button variant="secondary-outline" wire:click="closeAppSelect">
                             Abbrechen
                         </x-ui-button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    @endif
+
+    {{-- Plaud Connect Modal (refresh_token einfügen) --}}
+    @if ($plaudModal)
+        <div class="fixed inset-0 z-50 overflow-y-auto" role="dialog" aria-modal="true">
+            <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+                <div class="fixed inset-0 bg-gray-500/75 transition-opacity" wire:click="closePlaudConnect"></div>
+                <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+
+                <div class="relative inline-block align-bottom bg-white rounded-2xl text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-md sm:w-full">
+                    <div class="px-6 pt-5 pb-4">
+                        <h3 class="text-lg font-medium text-[var(--ui-secondary)] mb-2">Plaud verbinden</h3>
+                        <p class="text-sm text-[var(--ui-muted)] mb-4">
+                            Einmalig <code>plaud login</code> (CLI) ausführen und den <strong>refresh_token</strong>
+                            aus <code>~/.plaud/tokens.json</code> hier einfügen — der ganze Datei-Inhalt geht auch.
+                        </p>
+                        <textarea wire:model.defer="plaudToken" rows="4"
+                            class="w-full rounded-lg border border-[var(--ui-border)]/60 px-3 py-2 text-sm font-mono"
+                            placeholder="refresh_token …"></textarea>
+                    </div>
+                    <div class="border-t border-[var(--ui-border)] px-6 py-3 flex justify-end gap-2">
+                        <x-ui-button variant="secondary-outline" wire:click="closePlaudConnect">Abbrechen</x-ui-button>
+                        <x-ui-button variant="primary" wire:click="connectPlaud">Verbinden</x-ui-button>
                     </div>
                 </div>
             </div>
