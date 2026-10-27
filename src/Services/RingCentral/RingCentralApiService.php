@@ -43,6 +43,12 @@ class RingCentralApiService
             throw RingCentralApiException::connectionError('Keine RingCentral-Verbindung konfiguriert.');
         }
 
+        // Fremde Connector-Typen (z. B. eine Sipgate-ID) nicht mit RingCentral-Logik ansprechen.
+        $expected = $this->connectorService->getConnectorKey();
+        if ($connection->connector?->key !== $expected) {
+            throw RingCentralApiException::connectionError("Connection {$connection->id} ist keine {$expected}-Verbindung.");
+        }
+
         return $connection;
     }
 

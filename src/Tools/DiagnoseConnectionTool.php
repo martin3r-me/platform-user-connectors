@@ -29,7 +29,8 @@ class DiagnoseConnectionTool implements ToolContract, ToolMetadataContract
             'type' => 'object',
             'properties' => [
                 'connection_id' => ['type' => 'integer', 'description' => 'Connection ID. Wenn nicht angegeben, wird die Default-MS365-Connection genutzt.'],
-                'action' => ['type' => 'string', 'description' => 'Optional: "create_teams_subscription" oder "create_call_records_subscription" um Subscriptions manuell zu erstellen. Default: Diagnose-Report.'],
+                'action' => ['type' => 'string', 'enum' => ['diagnose', 'create_teams_subscription', 'create_call_records_subscription'], 'description' => 'Default: diagnose (nur lesen). Die create_*-Aktionen legen App-Subscriptions an und erfordern confirm=true.'],
+                'confirm' => ['type' => 'boolean', 'description' => 'Pflicht (true) für create_*-Aktionen.'],
             ],
             'required' => [],
         ];
@@ -60,6 +61,10 @@ class DiagnoseConnectionTool implements ToolContract, ToolMetadataContract
 
             if (!$connection) {
                 return ToolResult::error('NOT_FOUND', 'Keine MS365-Verbindung gefunden.');
+            }
+
+            if (str_starts_with($action, 'create_') && empty($arguments['confirm'])) {
+                return ToolResult::error("{$action} legt Graph-Subscriptions an — bitte mit confirm=true bestätigen.", 'CONFIRMATION_REQUIRED');
             }
 
             if ($action === 'create_teams_subscription') {
@@ -174,13 +179,17 @@ class DiagnoseConnectionTool implements ToolContract, ToolMetadataContract
                     ];
 
                     if ($appToken) {
-                        // List existing subscriptions via Graph
+                        // Subscriptions via Graph — der App-Token sieht alle des Tenants
+                        // (inkl. Ressourcen-Pfade anderer User), daher nur die eigenen zeigen.
+                        $ownIds = collect($subs)->pluck('id')->filter()->all();
                         $subsResponse = Http::withToken($appToken)->timeout(10)->get("{$baseUrl}/subscriptions");
+                        $tenantSubs = collect($subsResponse->json('value') ?? []);
                         $report['graph_subscriptions'] = [
                             'status' => $subsResponse->status(),
                             'ok' => $subsResponse->successful(),
+                            'tenant_total' => $subsResponse->successful() ? $tenantSubs->count() : null,
                             'data' => $subsResponse->successful()
-                                ? collect($subsResponse->json('value') ?? [])->map(fn ($s) => [
+                                ? $tenantSubs->filter(fn ($s) => in_array($s['id'] ?? null, $ownIds, true))->values()->map(fn ($s) => [
                                     'id' => $s['id'] ?? null,
                                     'resource' => $s['resource'] ?? null,
                                     'changeType' => $s['changeType'] ?? null,
@@ -362,8 +371,8 @@ class DiagnoseConnectionTool implements ToolContract, ToolMetadataContract
             'tags' => ['user-connectors', 'microsoft365', 'teams', 'subscriptions', 'diagnose', 'debug'],
             'read_only' => false,
             'requires_auth' => true,
-            'risk_level' => 'safe',
-            'cost_class' => 'local_db',
+            'risk_level' => 'write',
+            'cost_class' => 'external_api_free',
         ];
     }
 }

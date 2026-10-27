@@ -7,6 +7,7 @@ use Platform\Core\Contracts\ToolContext;
 use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
 use Platform\UserConnectors\Jobs\EnrichMicrosoft365EventJob;
+use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorInboundEvent;
 use Platform\UserConnectors\Services\InboundEventService;
 
@@ -52,7 +53,14 @@ class ReprocessEventTool implements ToolContract, ToolMetadataContract
             return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
         }
 
-        $event = UserConnectorInboundEvent::find((int) ($arguments['event_id'] ?? 0));
+        // Nur Events eigener Connections — Reprocess schreibt Sessions und
+        // ruft mit force_enrich Graph über die Connection des Besitzers auf.
+        $event = UserConnectorInboundEvent::query()
+            ->whereKey((int) ($arguments['event_id'] ?? 0))
+            ->whereIn('connection_id', UserConnectorConnection::query()
+                ->where('owner_user_id', $context->user->id)
+                ->select('id'))
+            ->first();
         if (!$event) {
             return ToolResult::error('NOT_FOUND', 'Event nicht gefunden.');
         }
@@ -106,16 +114,9 @@ class ReprocessEventTool implements ToolContract, ToolMetadataContract
         } catch (\Throwable $e) {
             $event->markCorrelationFailed(get_class($e) . ': ' . $e->getMessage());
 
-            return ToolResult::error(
-                'REPROCESS_FAILED',
-                $e->getMessage(),
-                [
-                    'class' => get_class($e),
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                    'trace_top' => array_slice(explode("\n", $e->getTraceAsString()), 0, 10),
-                ],
-            );
+            report($e);
+
+            return ToolResult::error('Reprocess fehlgeschlagen: ' . $e->getMessage(), 'REPROCESS_FAILED');
         }
     }
 

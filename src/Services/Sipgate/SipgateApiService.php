@@ -43,6 +43,10 @@ class SipgateApiService
             throw SipgateApiException::connectionError('Keine Sipgate-Verbindung konfiguriert.');
         }
 
+        if ($connection->connector?->key !== 'sipgate') {
+            throw SipgateApiException::connectionError("Connection {$connection->id} ist keine Sipgate-Verbindung.");
+        }
+
         return $connection;
     }
 
