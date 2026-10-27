@@ -144,6 +144,37 @@ abstract class Microsoft365Tool implements ToolContract, ToolMetadataContract
         ];
     }
 
+    protected static function addressProperty(string $description): array
+    {
+        return [
+            'type' => ['array', 'string'],
+            'items' => ['type' => 'string'],
+            'description' => $description . ' Array oder komma-/semikolongetrennt.',
+        ];
+    }
+
+    protected static function attachmentsProperty(): array
+    {
+        return [
+            'type' => 'array',
+            'description' => 'Optional. Dateianhänge (je max. ~3 MB).',
+            'items' => [
+                'type' => 'object',
+                'properties' => [
+                    'name' => ['type' => 'string'],
+                    'content_base64' => ['type' => 'string'],
+                    'content_type' => ['type' => 'string'],
+                ],
+                'required' => ['name', 'content_base64'],
+            ],
+        ];
+    }
+
+    protected function attachmentsArgument(array $arguments): array
+    {
+        return array_values(array_filter((array) ($arguments['attachments'] ?? []), 'is_array'));
+    }
+
     protected static function writeMetadata(array $tags, array $extra = []): array
     {
         return array_merge([

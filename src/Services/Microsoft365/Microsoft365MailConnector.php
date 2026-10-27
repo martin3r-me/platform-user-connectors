@@ -240,64 +240,216 @@ class Microsoft365MailConnector implements MessageConnector
     /**
      * Antwort über Graph. Default replyAll — alle ursprünglichen Empfänger
      * bleiben dran; replyAll=false antwortet nur dem Absender.
+     *
+     * Options: to (zusätzliche Empfänger), cc, bcc, exclude (Adressen entfernen),
+     * importance, save_as_draft. Mit Options oder Anhängen läuft die Antwort
+     * über einen Entwurf (createReply → ergänzen → senden), weil /reply
+     * übergebene Empfängerlisten ersetzt statt ergänzt.
      */
-    public function replyToMessage(User $user, string $messageId, string $body, array $attachments = [], bool $replyAll = true, ?string $bodyType = null): Message
+    public function replyToMessage(User $user, string $messageId, string $body, array $attachments = [], bool $replyAll = true, ?string $bodyType = null, array $options = []): Message
     {
         $endpoint = $replyAll ? 'replyAll' : 'reply';
+        $path = '/me/messages/' . Microsoft365ApiService::segment($messageId);
+        $comment = self::normalizeBody($body, $bodyType);
 
-        $this->api->post($user, '/me/messages/' . Microsoft365ApiService::segment($messageId) . '/' . $endpoint, [
-            'comment' => self::normalizeBody($body, $bodyType),
-        ]);
+        if ($attachments === [] && !$this->hasComposeOptions($options)) {
+            $this->api->post($user, "{$path}/{$endpoint}", ['comment' => $comment]);
 
-        // reply / replyAll antworten mit 202 — minimaler Stub.
-        return new Message(
-            id: 'reply-' . now()->timestamp,
-            provider: 'microsoft365',
-            from: 'me',
-            to: [],
-            subject: null,
-            body: $body,
-            bodyType: 'html',
-            date: now(),
-            isRead: true,
-            threadId: null,
-            attachments: [],
-            raw: [],
-        );
+            // reply / replyAll antworten mit 202 — minimaler Stub.
+            return new Message(
+                id: 'reply-' . now()->timestamp,
+                provider: 'microsoft365',
+                from: 'me',
+                to: [],
+                subject: null,
+                body: $body,
+                bodyType: 'html',
+                date: now(),
+                isRead: true,
+                threadId: null,
+                attachments: [],
+                raw: [],
+            );
+        }
+
+        $draft = $this->api->post($user, "{$path}/create" . ucfirst($endpoint), ['comment' => $comment]);
+
+        return $this->completeDraft($user, $draft, $attachments, $options, $body);
     }
 
     /**
      * Weiterleiten über Graphs nativen /forward — Anhänge und Original-Header
      * bleiben erhalten; comment steht in Outlook über der Original-Mail.
      *
+     * Options: cc, bcc, importance, save_as_draft. Mit Options oder
+     * zusätzlichen Anhängen läuft es über createForward (Entwurf).
+     *
      * @param array<int, string>|string $toAddresses
      */
-    public function forwardMessage(User $user, string $messageId, array|string $toAddresses, string $comment = '', ?string $bodyType = null): Message
+    public function forwardMessage(User $user, string $messageId, array|string $toAddresses, string $comment = '', ?string $bodyType = null, array $attachments = [], array $options = []): Message
     {
         $toList = self::parseAddresses($toAddresses);
         if ($toList === []) {
             throw new \InvalidArgumentException('Mindestens ein Empfänger (to) ist erforderlich.');
         }
 
-        $this->api->post($user, '/me/messages/' . Microsoft365ApiService::segment($messageId) . '/forward', [
+        $path = '/me/messages/' . Microsoft365ApiService::segment($messageId);
+        $payload = [
             'comment' => self::normalizeBody($comment, $bodyType),
             'toRecipients' => $this->recipients($toList),
-        ]);
+        ];
+
+        if ($attachments === [] && !$this->hasComposeOptions($options)) {
+            $this->api->post($user, "{$path}/forward", $payload);
+
+            return new Message(
+                id: 'forward-' . now()->timestamp,
+                provider: 'microsoft365',
+                from: 'me',
+                to: $toList,
+                subject: null,
+                body: $comment,
+                bodyType: 'html',
+                date: now(),
+                isRead: true,
+                threadId: null,
+                attachments: [],
+                raw: [],
+            );
+        }
+
+        $draft = $this->api->post($user, "{$path}/createForward", $payload);
+
+        return $this->completeDraft($user, $draft, $attachments, $options, $comment);
+    }
+
+    /**
+     * Bestehenden Entwurf ändern. Changes: subject, body (+ body_type),
+     * to/cc/bcc (ersetzen die Liste), importance; Anhänge werden ergänzt.
+     */
+    public function updateDraft(User $user, string $draftId, array $changes, array $attachments = []): Message
+    {
+        $path = '/me/messages/' . Microsoft365ApiService::segment($draftId);
+        $patch = [];
+        if (isset($changes['subject'])) {
+            $patch['subject'] = (string) $changes['subject'];
+        }
+        if (isset($changes['body'])) {
+            $patch['body'] = ['contentType' => 'HTML', 'content' => self::normalizeBody((string) $changes['body'], $changes['body_type'] ?? null)];
+        }
+        foreach (['to' => 'toRecipients', 'cc' => 'ccRecipients', 'bcc' => 'bccRecipients'] as $key => $field) {
+            if (array_key_exists($key, $changes) && $changes[$key] !== null) {
+                $patch[$field] = $this->recipients(self::parseAddresses($changes[$key]));
+            }
+        }
+        if (in_array($changes['importance'] ?? null, ['low', 'normal', 'high'], true)) {
+            $patch['importance'] = $changes['importance'];
+        }
+        if ($patch === [] && $attachments === []) {
+            throw new \InvalidArgumentException('Keine Änderungen am Entwurf übergeben.');
+        }
+
+        $data = $patch !== [] ? $this->api->patch($user, $path, $patch) : $this->api->get($user, $path, ['$select' => self::BASE_SELECT]);
+        $this->addAttachments($user, $draftId, $attachments);
+
+        return $this->mapMessage($data, 'none');
+    }
+
+    /**
+     * Entwurf senden. Nur Mails im Drafts-Ordner (isDraft=true).
+     */
+    public function sendDraft(User $user, string $draftId): void
+    {
+        $this->api->post($user, '/me/messages/' . Microsoft365ApiService::segment($draftId) . '/send');
+    }
+
+    /**
+     * Entwurf ergänzen (Empfänger, Anhänge) und — sofern nicht save_as_draft —
+     * senden. Graph hat die Empfänger für Antworten bereits vorbelegt; hier
+     * wird ergänzt bzw. per exclude entfernt, nicht ersetzt.
+     */
+    protected function completeDraft(User $user, array $draft, array $attachments, array $options, string $body): Message
+    {
+        $draftId = (string) ($draft['id'] ?? '');
+        if ($draftId === '') {
+            throw new \RuntimeException('Graph hat keinen Entwurf angelegt.');
+        }
+
+        $current = fn (string $field) => array_map(
+            fn (array $r) => (string) ($r['emailAddress']['address'] ?? ''),
+            $draft[$field] ?? [],
+        );
+        $exclude = array_map('strtolower', self::parseAddresses($options['exclude'] ?? null));
+        $merge = function (array $existing, array $added) use ($exclude): array {
+            $out = [];
+            foreach (array_merge($existing, $added) as $addr) {
+                if ($addr !== '' && !in_array(strtolower($addr), $exclude, true)) {
+                    $out[strtolower($addr)] = $addr;
+                }
+            }
+
+            return array_values($out);
+        };
+
+        $to = $merge($current('toRecipients'), self::parseAddresses($options['to'] ?? null));
+        $cc = $merge($current('ccRecipients'), self::parseAddresses($options['cc'] ?? null));
+        $bcc = $merge($current('bccRecipients'), self::parseAddresses($options['bcc'] ?? null));
+        if ($to === [] && $cc === [] && $bcc === []) {
+            throw new \InvalidArgumentException('Nach exclude bleibt kein Empfänger übrig.');
+        }
+
+        $patch = [
+            'toRecipients' => $this->recipients($to),
+            'ccRecipients' => $this->recipients($cc),
+            'bccRecipients' => $this->recipients($bcc),
+        ];
+        if (in_array($options['importance'] ?? null, ['low', 'normal', 'high'], true)) {
+            $patch['importance'] = $options['importance'];
+        }
+
+        $path = '/me/messages/' . Microsoft365ApiService::segment($draftId);
+        $this->api->patch($user, $path, $patch);
+        $this->addAttachments($user, $draftId, $attachments);
+
+        $isDraft = !empty($options['save_as_draft']);
+        if (!$isDraft) {
+            $this->sendDraft($user, $draftId);
+        }
 
         return new Message(
-            id: 'forward-' . now()->timestamp,
+            id: $isDraft ? $draftId : 'sent-' . now()->timestamp,
             provider: 'microsoft365',
             from: 'me',
-            to: $toList,
-            subject: null,
-            body: $comment,
+            to: $to,
+            subject: $draft['subject'] ?? null,
+            body: $body,
             bodyType: 'html',
             date: now(),
             isRead: true,
-            threadId: null,
+            threadId: $draft['conversationId'] ?? null,
             attachments: [],
-            raw: [],
+            raw: ['bcc' => $bcc],
+            cc: $cc,
+            webLink: $isDraft ? ($draft['webLink'] ?? null) : null,
         );
+    }
+
+    protected function addAttachments(User $user, string $messageId, array $attachments): void
+    {
+        foreach ($this->mapAttachmentsForSend($attachments) as $attachment) {
+            $this->api->post($user, '/me/messages/' . Microsoft365ApiService::segment($messageId) . '/attachments', $attachment);
+        }
+    }
+
+    protected function hasComposeOptions(array $options): bool
+    {
+        foreach (['to', 'cc', 'bcc', 'exclude', 'importance', 'save_as_draft'] as $key) {
+            if (!empty($options[$key])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
