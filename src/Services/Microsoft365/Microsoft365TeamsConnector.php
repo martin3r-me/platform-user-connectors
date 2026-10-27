@@ -108,67 +108,83 @@ class Microsoft365TeamsConnector implements PresenceConnector
     }
 
     /**
-     * Chats, zuletzt aktive zuerst. /me/chats ist ohne $orderby unsortiert —
-     * die erste Seite enthält dann beliebige (oft alte) Chats. Sortiert wird
-     * serverseitig nach lastMessagePreview; die Varianten fallen zurück, falls
-     * Graph eine Kombination ablehnt. Options: limit, search, cursor.
+     * Chats, zuletzt aktive zuerst — exakt nach Graph-Doku (chat-list):
+     * $orderby nur lastMessagePreview/createdDateTime desc, $expand nur EIN
+     * Property (members ODER lastMessagePreview), $select nicht unterstützt.
+     * Mitglieder kommen daher per JSON-Batch (max. 20 je Batch) nach.
+     * Ungelesen = lastMessagePreview.createdDateTime > viewpoint.lastMessageReadDateTime.
+     *
+     * Options: limit (Default 20), search, unread_only, include_members (Default true),
+     * include_hidden, cursor.
      */
     public function listChats(User $user, array $options = []): array
     {
-        $limit = max(1, min(50, (int) ($options['limit'] ?? 50)));
-        $data = null;
+        $limit = max(1, min(50, (int) ($options['limit'] ?? 20)));
         $sortError = null;
 
         if (!empty($options['cursor'])) {
             $data = $this->api->getNextPage($user, (string) $options['cursor']);
         } else {
-            $select = ['$select' => 'id,topic,chatType,lastUpdatedDateTime,webUrl'];
-            $ordered = ['$orderby' => 'lastMessagePreview/createdDateTime desc'];
-            $attempts = [
-                $select + ['$expand' => 'members,lastMessagePreview'] + $ordered,
-                ['$expand' => 'members,lastMessagePreview'] + $ordered,
-                ['$expand' => 'lastMessagePreview'] + $ordered,
-                // Letzter Ausweg: unsortiert (Graph-Reihenfolge), nur Seite sortiert.
-                $select + ['$expand' => 'members'],
-            ];
-            foreach ($attempts as $i => $variant) {
-                try {
-                    $data = $this->api->get($user, '/me/chats', ['$top' => $limit] + $variant);
-                    break;
-                } catch (Microsoft365ApiException $e) {
-                    if ($e->getCode() !== 400 || $i === array_key_last($attempts)) {
-                        throw $e;
-                    }
-                    $sortError ??= $e->getMessage();
+            try {
+                $data = $this->api->get($user, '/me/chats', [
+                    '$top' => $limit,
+                    '$expand' => 'lastMessagePreview',
+                    '$orderby' => 'lastMessagePreview/createdDateTime desc',
+                ]);
+            } catch (Microsoft365ApiException $e) {
+                if ($e->getCode() !== 400) {
+                    throw $e;
                 }
-            }
-            if (!isset($variant['$orderby'])) {
+                // Letzter Ausweg: unsortiert, aber sichtbar gemeldet.
+                $sortError = $e->getMessage();
                 Log::warning('Microsoft365: /me/chats ohne Sortierung abgerufen', ['error' => $sortError]);
-            } else {
-                $sortError = null;
+                $data = $this->api->get($user, '/me/chats', ['$top' => $limit, '$expand' => 'members']);
             }
+        }
+
+        $rows = $data['value'] ?? [];
+        if (empty($options['include_hidden'])) {
+            $rows = array_values(array_filter($rows, fn ($c) => empty($c['viewpoint']['isHidden'])));
+        }
+
+        if (($options['include_members'] ?? true) && $rows !== [] && !array_key_exists('members', $rows[0])) {
+            $members = $this->fetchMembers($user, array_column($rows, 'id'));
+            foreach ($rows as &$row) {
+                $row['members'] = $members[$row['id']] ?? null;
+            }
+            unset($row);
         }
 
         $chats = array_map(function (array $c) {
             $last = $c['lastMessagePreview'] ?? null;
+            $lastAt = $last['createdDateTime'] ?? null;
+            $readAt = $c['viewpoint']['lastMessageReadDateTime'] ?? null;
 
             return array_filter([
                 'id' => $c['id'] ?? '',
                 'topic' => $c['topic'] ?? null,
                 'chat_type' => $c['chatType'] ?? 'oneOnOne',
-                'last_updated' => $c['lastUpdatedDateTime'] ?? null,
+                'unread' => $lastAt && $readAt !== null ? strcmp($lastAt, $readAt) > 0 : null,
                 'last_message' => $last ? array_filter([
-                    'at' => $last['createdDateTime'] ?? null,
-                    'from' => $last['from']['user']['displayName'] ?? null,
-                    'preview' => mb_substr(self::htmlToText((string) ($last['body']['content'] ?? '')), 0, 200),
+                    'at' => $lastAt,
+                    'from' => $last['from']['user']['displayName'] ?? $last['from']['application']['displayName'] ?? null,
+                    'preview' => ($last['messageType'] ?? 'message') === 'message'
+                        ? mb_substr(self::htmlToText((string) ($last['body']['content'] ?? '')), 0, 200)
+                        : null,
                 ], fn ($v) => $v !== null && $v !== '') : null,
+                'last_updated' => $c['lastUpdatedDateTime'] ?? null,
                 'members' => isset($c['members']) ? array_map(fn (array $m) => [
                     'name' => $m['displayName'] ?? null,
                     'email' => $m['email'] ?? null,
                     'user_id' => $m['userId'] ?? null,
                 ], $c['members']) : null,
+                'web_url' => $c['webUrl'] ?? null,
             ], fn ($v) => $v !== null);
-        }, $data['value'] ?? []);
+        }, $rows);
+
+        if (!empty($options['unread_only'])) {
+            $chats = array_values(array_filter($chats, fn ($c) => !empty($c['unread'])));
+        }
 
         $search = mb_strtolower(trim((string) ($options['search'] ?? '')));
         if ($search !== '') {
@@ -182,16 +198,48 @@ class Microsoft365TeamsConnector implements PresenceConnector
             }));
         }
 
-        $activity = fn (array $c) => $c['last_message']['at'] ?? $c['last_updated'] ?? '';
-        usort($chats, fn ($a, $b) => strcmp($activity($b), $activity($a)));
+        if ($sortError) {
+            $activity = fn (array $c) => $c['last_message']['at'] ?? $c['last_updated'] ?? '';
+            usort($chats, fn ($a, $b) => strcmp($activity($b), $activity($a)));
+        }
 
         $result = ['chats' => $chats, 'next_cursor' => $data['@odata.nextLink'] ?? null];
         if ($sortError) {
-            // Sichtbar machen statt still falsch sortieren.
             $result['sort_warning'] = 'Graph lehnte die Sortierung nach letzter Aktivität ab — Reihenfolge nur innerhalb dieser Seite. (' . $sortError . ')';
         }
 
         return $result;
+    }
+
+    /**
+     * Mitglieder mehrerer Chats per JSON-Batch (Graph: max. 20 Requests je Batch).
+     *
+     * @param array<int, string> $chatIds
+     * @return array<string, array> chatId => members
+     */
+    protected function fetchMembers(User $user, array $chatIds): array
+    {
+        $members = [];
+        foreach (array_chunk(array_values($chatIds), 20) as $chunk) {
+            try {
+                $response = $this->api->post($user, '/$batch', ['requests' => array_map(fn ($id, $i) => [
+                    'id' => (string) $i,
+                    'method' => 'GET',
+                    'url' => '/chats/' . Microsoft365ApiService::segment($id) . '/members',
+                ], $chunk, array_keys($chunk))]);
+            } catch (\Throwable $e) {
+                Log::warning('Microsoft365: Chat-Mitglieder per Batch fehlgeschlagen', ['error' => $e->getMessage()]);
+                continue;
+            }
+            foreach ($response['responses'] ?? [] as $r) {
+                $chatId = $chunk[(int) ($r['id'] ?? -1)] ?? null;
+                if ($chatId !== null && ($r['status'] ?? 0) === 200) {
+                    $members[$chatId] = $r['body']['value'] ?? [];
+                }
+            }
+        }
+
+        return $members;
     }
 
     /**
