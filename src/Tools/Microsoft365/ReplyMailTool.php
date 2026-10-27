@@ -2,28 +2,25 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365MailConnector;
 
 /**
- * Echte Outlook-Antwort über Graph POST /messages/{id}/reply — behält
- * Thread-Header, Conversation-ID und Original-Inhalt. Unterschied zu
- * SendMailTool: das wäre eine fresh composed mail ohne Thread-Bezug.
+ * Echte Outlook-Antwort über Graph /reply bzw. /replyAll — behält Thread,
+ * Conversation-ID und zitiert das Original (anders als mail.send).
  */
-class ReplyMailTool implements ToolContract, ToolMetadataContract
+class ReplyMailTool extends Microsoft365Tool
 {
-    public function getName(): string { return 'user-connectors.microsoft365.mail.reply'; }
+    public function getName(): string
+    {
+        return 'user-connectors.microsoft365.mail.reply';
+    }
 
     public function getDescription(): string
     {
-        return 'Antwortet auf eine Outlook-Mail über Graphs nativen Reply-Endpoint '
-            . '(Thread + Conversation-ID bleiben erhalten). Default: reply_all=true — '
-            . 'alle ursprünglichen Empfänger bleiben drauf. Mit reply_all=false geht die '
-            . 'Antwort nur an den Absender. Body: Plain Text (\\n bleibt erhalten) oder HTML, steuerbar über body_type.';
+        return 'Antwortet auf eine Outlook-Mail (Thread und Original-Zitat bleiben erhalten). '
+            . 'Default reply_all=true — alle ursprünglichen Empfänger bleiben drauf; reply_all=false antwortet nur dem Absender. '
+            . 'Body: Plain Text (Zeilenumbrüche bleiben) oder HTML.';
     }
 
     public function getSchema(): array
@@ -31,47 +28,43 @@ class ReplyMailTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer'],
-                'external_mail_id' => ['type' => 'string'],
-                'body' => ['type' => 'string'],
-                'body_type' => ['type' => 'string', 'enum' => ['text', 'html'], 'description' => 'Optional. text = Plain Text (Zeilenumbrüche bleiben erhalten), html = unverändert. Default: automatisch — ohne HTML-Tags im Body wird Plain Text angenommen.'],
+                'connection_id' => self::connectionProperty(),
+                'external_mail_id' => ['type' => 'string', 'description' => 'Graph-Message-ID der Mail, auf die geantwortet wird (id aus mail.list).'],
+                'body' => ['type' => 'string', 'description' => 'Antworttext.'],
+                'body_type' => ['type' => 'string', 'enum' => ['text', 'html'], 'description' => 'Optional. Default: automatisch.'],
                 'reply_all' => ['type' => 'boolean', 'description' => 'Default: true.'],
             ],
             'required' => ['external_mail_id', 'body'],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function errorPrefix(): string
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
+        return 'Antwort fehlgeschlagen';
+    }
 
-        $mailId = trim((string) ($arguments['external_mail_id'] ?? ''));
+    protected function handle(array $arguments, ToolContext $context): ToolResult
+    {
+        $mailId = $this->requireString($arguments, 'external_mail_id');
         $body = (string) ($arguments['body'] ?? '');
-        if ($mailId === '' || trim($body) === '') {
-            return ToolResult::error('VALIDATION_ERROR', 'external_mail_id und body sind erforderlich.');
+        if (trim($body) === '') {
+            throw new \InvalidArgumentException('body ist erforderlich.');
         }
+        $replyAll = $this->optionalBool($arguments, 'reply_all') ?? true;
 
-        try {
-            $connector = app(Microsoft365MailConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365MailConnector(
-                    app(Microsoft365ApiService::class)->forConnection((int) $arguments['connection_id'])
-                );
-            }
-            $replyAll = $arguments['reply_all'] ?? true;
-            $message = $connector->replyToMessage($context->user, $mailId, $body, [], (bool) $replyAll, $arguments['body_type'] ?? null);
-            return ToolResult::success(['message' => $message->toArray(), 'status' => 'sent']);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Reply fehlgeschlagen: ' . $e->getMessage());
-        }
+        $this->mail($arguments)->replyToMessage($context->user, $mailId, $body, [], $replyAll, $arguments['body_type'] ?? null);
+
+        return ToolResult::success([
+            'status' => 'sent',
+            'reply_all' => $replyAll,
+            'external_mail_id' => $mailId,
+        ]);
     }
 
     public function getMetadata(): array
     {
-        return ['category' => 'action', 'tags' => ['microsoft365', 'mail', 'reply'], 'read_only' => false,
-            'requires_auth' => true, 'risk_level' => 'write', 'confirmation_required' => true,
-            'cost_class' => 'external_api_free'];
+        return self::writeMetadata(['outlook', 'mail', 'email', 'reply', 'channel:mail', 'action:reply'], [
+            'related_tools' => ['user-connectors.microsoft365.mail.list'],
+        ]);
     }
 }

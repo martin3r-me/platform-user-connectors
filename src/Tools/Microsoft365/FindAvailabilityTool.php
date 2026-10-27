@@ -2,29 +2,22 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Carbon\Carbon;
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365CalendarConnector;
+use Platform\UserConnectors\Services\Microsoft365\Microsoft365EventTime;
 
-/**
- * Findet gemeinsame freie Zeitfenster über mehrere Teilnehmer im
- * vorgegebenen Zeitraum. Implementiert das CalendarConnector::findMeetingTimes-
- * Contract — austauschbar gegen Gmail/Calendar/etc. sobald wir die
- * entsprechenden Provider-Connectors haben.
- */
-class FindAvailabilityTool implements ToolContract, ToolMetadataContract
+class FindAvailabilityTool extends Microsoft365Tool
 {
-    public function getName(): string { return 'user-connectors.microsoft365.calendar.find_availability'; }
+    public function getName(): string
+    {
+        return 'user-connectors.microsoft365.calendar.find_availability';
+    }
 
     public function getDescription(): string
     {
-        return 'Sucht gemeinsame freie Zeitslots für eine Gruppe von Teilnehmern in einem Zeitfenster '
-            . '(MS Graph findMeetingTimes). Provider-agnostische Antwort-Shape — gleiche Schnittstelle '
-            . 'wird später auch von Gmail / anderen Calendar-Providern bedient.';
+        return 'Verfügbarkeit im Outlook-Kalender. mode=suggestions (Default): gemeinsame freie Slots für den User + participants '
+            . '(Dauer duration_minutes, standardmäßig nur in Arbeitszeit). mode=schedule: belegte Blöcke (inkl. Ganztags-Abwesenheiten) '
+            . 'und Arbeitszeiten je Person/Raum — für "Ist X am Dienstag da?" oder Raum-Belegung.';
     }
 
     public function getSchema(): array
@@ -32,87 +25,108 @@ class FindAvailabilityTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer'],
+                'connection_id' => self::connectionProperty(),
+                'mode' => ['type' => 'string', 'enum' => ['suggestions', 'schedule'], 'description' => 'Default: suggestions.'],
                 'participants' => [
-                    'type' => 'array',
-                    'description' => 'E-Mail-Adressen der zusätzlichen Teilnehmer (der Organisator-User ist implizit dabei).',
+                    'type' => ['array', 'string'],
                     'items' => ['type' => 'string'],
+                    'description' => 'E-Mail-Adressen (Personen oder Räume). suggestions: weitere Teilnehmer, der User ist implizit dabei. '
+                        . 'schedule: wessen Kalender geprüft wird (Default: der User selbst).',
                 ],
-                'after' => ['type' => 'string', 'description' => 'Frühester Startzeitpunkt, ISO-8601.'],
-                'before' => ['type' => 'string', 'description' => 'Spätester Endzeitpunkt, ISO-8601.'],
-                'duration_minutes' => ['type' => 'integer', 'description' => 'Dauer des gesuchten Slots in Minuten. Default 30.'],
-                'max_candidates' => ['type' => 'integer', 'description' => 'Maximale Anzahl Vorschläge. Default 5.'],
+                'after' => ['type' => 'string', 'description' => 'Zeitraum-Beginn (2026-11-03 oder 2026-11-03T08:00). Default: jetzt.'],
+                'before' => ['type' => 'string', 'description' => 'Zeitraum-Ende. Reines Datum = einschließlich dieses Tages. Default: after + 7 Tage.'],
+                'timezone' => self::timezoneProperty(),
+                'duration_minutes' => ['type' => 'integer', 'description' => 'suggestions: Dauer des Slots. Default 30.'],
+                'max_candidates' => ['type' => 'integer', 'description' => 'suggestions: max. Vorschläge (1–50). Default 5.'],
+                'work_hours_only' => ['type' => 'boolean', 'description' => 'suggestions: nur innerhalb der Arbeitszeit. Default true.'],
+                'minimum_attendee_percentage' => ['type' => 'integer', 'description' => 'suggestions: Anteil Teilnehmer, die frei sein müssen. Default 100.'],
             ],
-            'required' => ['participants', 'after', 'before'],
+            'required' => [],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function errorPrefix(): string
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
+        return 'Verfügbarkeit fehlgeschlagen';
+    }
+
+    protected function handle(array $arguments, ToolContext $context): ToolResult
+    {
+        $tz = Microsoft365EventTime::resolveTimezone($arguments['timezone'] ?? null);
+        $participants = $this->stringList($arguments['participants'] ?? []);
+
+        $after = !empty($arguments['after']) ? Microsoft365EventTime::parse((string) $arguments['after'], $tz) : now($tz);
+        if (!empty($arguments['before'])) {
+            $before = Microsoft365EventTime::parse((string) $arguments['before'], $tz);
+            if (Microsoft365EventTime::isDateOnly((string) $arguments['before'])) {
+                $before = $before->copy()->addDay();
+            }
+        } else {
+            $before = $after->copy()->addDays(7);
+        }
+        if ($before->lte($after)) {
+            throw new \InvalidArgumentException('before muss nach after liegen.');
         }
 
-        $participants = array_values(array_filter(array_map(
-            fn ($e) => is_string($e) ? trim($e) : null,
-            (array) ($arguments['participants'] ?? []),
-        )));
-        if (empty($participants)) {
-            return ToolResult::error('VALIDATION_ERROR', 'participants[] darf nicht leer sein.');
-        }
+        $connector = $this->calendar($arguments);
 
-        try {
-            $after = Carbon::parse((string) $arguments['after']);
-            $before = Carbon::parse((string) $arguments['before']);
-        } catch (\Throwable $e) {
-            return ToolResult::error('VALIDATION_ERROR', 'after/before müssen gültige ISO-8601-Zeitstempel sein.');
-        }
-
-        try {
-            $connector = app(Microsoft365CalendarConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365CalendarConnector(
-                    app(Microsoft365ApiService::class)->forConnection((int) $arguments['connection_id'])
-                );
+        if (($arguments['mode'] ?? 'suggestions') === 'schedule') {
+            if ($participants === []) {
+                $me = $this->api($arguments)->get($context->user, '/me', ['$select' => 'mail,userPrincipalName']);
+                $participants = array_filter([$me['mail'] ?? $me['userPrincipalName'] ?? null]);
             }
 
-            $result = $connector->findMeetingTimes(
-                $context->user,
-                $participants,
-                $after,
-                $before,
-                (int) ($arguments['duration_minutes'] ?? 30),
-                (int) ($arguments['max_candidates'] ?? 5),
-            );
-
-            // Carbon-Instanzen serialisierbar machen.
-            $suggestions = array_map(fn ($s) => [
-                'start' => $s['start']->toIso8601String(),
-                'end' => $s['end']->toIso8601String(),
-                'confidence' => $s['confidence'],
-                'reason' => $s['reason'],
-                'attendee_availability' => $s['attendee_availability'],
-            ], $result['suggestions']);
-
             return ToolResult::success([
-                'count' => count($suggestions),
-                'suggestions' => $suggestions,
+                'mode' => 'schedule',
+                'range' => ['from' => $after->toIso8601String(), 'to' => $before->toIso8601String(), 'timezone' => $tz],
+                'schedules' => $connector->getSchedule($context->user, $participants, $after, $before, $tz),
             ]);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Availability-Lookup fehlgeschlagen: ' . $e->getMessage());
         }
+
+        if ($participants === []) {
+            throw new \InvalidArgumentException('participants darf bei mode=suggestions nicht leer sein (für den eigenen Kalender mode=schedule nutzen).');
+        }
+
+        $result = $connector->findMeetingTimes(
+            $context->user,
+            $participants,
+            $after,
+            $before,
+            (int) ($arguments['duration_minutes'] ?? 30),
+            (int) ($arguments['max_candidates'] ?? 5),
+            [
+                'timezone' => $tz,
+                'work_hours_only' => $this->optionalBool($arguments, 'work_hours_only') ?? true,
+                'minimum_attendee_percentage' => $arguments['minimum_attendee_percentage'] ?? 100,
+            ],
+        );
+
+        $suggestions = array_map(fn ($s) => [
+            'start' => $s['start']->toIso8601String(),
+            'end' => $s['end']->toIso8601String(),
+            'confidence' => $s['confidence'],
+            'reason' => $s['reason'],
+            'attendee_availability' => $s['attendee_availability'],
+        ], $result['suggestions']);
+
+        return ToolResult::success(array_filter([
+            'mode' => 'suggestions',
+            'count' => count($suggestions),
+            'suggestions' => $suggestions,
+            'empty_reason' => $result['empty_reason'] ?? null,
+            'timezone' => $tz,
+        ], fn ($v) => $v !== null));
     }
 
     public function getMetadata(): array
     {
-        return [
+        return self::readMetadata(['outlook', 'calendar', 'availability', 'free_busy', 'schedule', 'find_meeting_times', 'planning'], [
             'category' => 'inspection',
-            'tags' => ['microsoft365', 'calendar', 'availability', 'find_meeting_times', 'planning'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'read',
-            'idempotent' => true,
-            'cost_class' => 'external_api_free',
-        ];
+            'examples' => [
+                'Slot finden: {"participants": ["a@firma.de"], "after": "2026-11-03", "before": "2026-11-06", "duration_minutes": 60}',
+                'Wer ist wann belegt: {"mode": "schedule", "participants": ["a@firma.de", "raum1@firma.de"], "after": "2026-11-03", "before": "2026-11-03"}',
+            ],
+            'related_tools' => ['user-connectors.microsoft365.calendar.create'],
+        ]);
     }
 }

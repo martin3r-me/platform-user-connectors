@@ -2,15 +2,14 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Carbon\Carbon;
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365CalendarConnector;
+use Platform\UserConnectors\Services\Microsoft365\Microsoft365EventTime;
 
-class CreateEventTool implements ToolContract, ToolMetadataContract
+class CreateEventTool extends Microsoft365Tool
 {
+    use CalendarEventSchema;
+
     public function getName(): string
     {
         return 'user-connectors.microsoft365.calendar.create';
@@ -18,84 +17,71 @@ class CreateEventTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Erstellt einen Kalender-Event im Outlook-Kalender des Users. Unterstützt Teilnehmer, Online-Meeting (Teams), Ort und Beschreibung.';
+        return 'Legt einen Termin im Outlook-Kalender an — mit Uhrzeit oder ganztags, optional mit Teilnehmern, Räumen und Teams-Link. '
+            . 'GANZTAGS: start als reines Datum ("2026-11-03"), end = letzter Tag (einschließlich) oder weglassen — nicht 00:00 bis 00:00 in UTC. '
+            . 'show_as steuert frei/belegt (Ganztags-Default: free). Die Antwort enthält summary zum Gegenlesen.';
     }
 
     public function getSchema(): array
     {
         return [
             'type' => 'object',
-            'properties' => [
-                'connection_id' => ['type' => 'integer', 'description' => 'Optionale Connection-ID.'],
-                'title' => ['type' => 'string', 'description' => 'Titel/Betreff des Events.'],
-                'start' => ['type' => 'string', 'description' => 'Start-Zeitpunkt (ISO-8601).'],
-                'end' => ['type' => 'string', 'description' => 'End-Zeitpunkt (ISO-8601).'],
-                'attendees' => [
-                    'type' => 'array',
-                    'items' => ['type' => 'string'],
-                    'description' => 'E-Mail-Adressen der Teilnehmer.',
-                ],
-                'rooms' => [
-                    'type' => 'array',
-                    'items' => ['type' => 'string'],
-                    'description' => 'E-Mail-Adressen der Raum-Ressourcen, die als Resource-Attendee mit-gebucht werden. Discovery via calendar.rooms.list.',
-                ],
-                'description' => ['type' => 'string', 'description' => 'Beschreibung (HTML erlaubt).'],
-                'location' => ['type' => 'string', 'description' => 'Ort des Events. Bei genau einem Raum + leerer Location wird automatisch die Raum-Mailbox als Anzeige-Location übernommen.'],
-                'online_meeting' => ['type' => 'boolean', 'description' => 'Teams-Meeting erstellen?'],
-            ],
-            'required' => ['title', 'start', 'end'],
+            'properties' => array_merge(
+                ['connection_id' => self::connectionProperty(), 'title' => ['type' => 'string', 'description' => 'Betreff des Termins.']],
+                self::timingProperties(),
+                self::detailProperties(),
+            ),
+            'required' => ['title', 'start'],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function errorPrefix(): string
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
+        return 'Termin anlegen fehlgeschlagen';
+    }
 
-        try {
-            $connector = app(Microsoft365CalendarConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365CalendarConnector(
-                    app(\Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService::class)
-                        ->forConnection($arguments['connection_id'])
-                );
-            }
+    protected function handle(array $arguments, ToolContext $context): ToolResult
+    {
+        $title = $this->requireString($arguments, 'title');
+        $tz = Microsoft365EventTime::resolveTimezone($arguments['timezone'] ?? null);
+        $range = Microsoft365EventTime::resolveRange(
+            $this->requireString($arguments, 'start'),
+            isset($arguments['end']) ? (string) $arguments['end'] : null,
+            $this->optionalBool($arguments, 'all_day'),
+            $tz,
+        );
 
-            $event = $connector->createEvent(
-                $context->user,
-                $arguments['title'],
-                Carbon::parse($arguments['start']),
-                Carbon::parse($arguments['end']),
-                $arguments['attendees'] ?? [],
-                [
-                    'description' => $arguments['description'] ?? null,
-                    'location' => $arguments['location'] ?? null,
-                    'online_meeting' => $arguments['online_meeting'] ?? false,
-                    'rooms' => $arguments['rooms'] ?? [],
-                ],
-            );
+        $event = $this->calendar($arguments)->createEvent(
+            $context->user,
+            $title,
+            $range['start'],
+            $range['end'],
+            (array) ($arguments['attendees'] ?? []),
+            $this->detailOptions($arguments) + [
+                'all_day' => $range['all_day'],
+                'timezone' => $tz,
+                'rooms' => $this->stringList($arguments['rooms'] ?? []),
+            ],
+        );
 
-            return ToolResult::success([
-                'event' => $event->toArray(),
-                'status' => 'created',
-            ]);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
-        }
+        $data = $event->toArray();
+
+        return ToolResult::success([
+            'status' => 'created',
+            'summary' => $this->summarize($data),
+            'event' => $data,
+        ]);
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'action',
-            'tags' => ['microsoft365', 'outlook', 'calendar', 'event', 'create'],
-            'read_only' => false,
-            'requires_auth' => true,
-            'risk_level' => 'write',
-            'confirmation_required' => true,
-            'cost_class' => 'external_api_free',
-        ];
+        return self::writeMetadata(['outlook', 'calendar', 'event', 'termin', 'create', 'all_day', 'ganztags'], [
+            'examples' => [
+                'Ganztags (1 Tag, frei): {"title": "Urlaub", "start": "2026-11-03", "show_as": "oof"}',
+                'Ganztags über 3 Tage: {"title": "Messe", "start": "2026-11-03", "end": "2026-11-05", "show_as": "busy"}',
+                'Mit Uhrzeit: {"title": "Call", "start": "2026-11-03T09:30", "end": "2026-11-03T10:00", "attendees": ["a@firma.de"], "online_meeting": true}',
+            ],
+            'related_tools' => ['user-connectors.microsoft365.calendar.find_availability', 'user-connectors.microsoft365.calendar.rooms.list'],
+        ]);
     }
 }

@@ -40,10 +40,52 @@ class Microsoft365ApiService
         }
 
         if (!$connection) {
-            throw Microsoft365ApiException::connectionError('Keine Microsoft 365 Verbindung konfiguriert.');
+            throw Microsoft365ApiException::connectionError($this->connectionIdOverride
+                ? "Connection {$this->connectionIdOverride} nicht gefunden oder kein Zugriff."
+                : 'Keine Microsoft 365 Verbindung konfiguriert.');
+        }
+
+        // Eine RingCentral-/Sipgate-Connection-ID darf nicht im Graph-Pfad landen.
+        if ($connection->connector?->key !== 'microsoft365') {
+            throw Microsoft365ApiException::connectionError(
+                "Connection {$connection->id} ist keine Microsoft-365-Verbindung."
+            );
         }
 
         return $connection;
+    }
+
+    /**
+     * Graph-ID oder Ordnername als Pfadsegment. Graph-IDs sind URL-safe,
+     * aber Ordnernamen/Mail-Adressen aus Agenten-Input nicht — und ohne
+     * Encoding wären "../"-Pfade möglich.
+     */
+    public static function segment(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '' || $value === '.' || $value === '..') {
+            throw new \InvalidArgumentException('Ungültige ID: "' . $value . '".');
+        }
+
+        // ":", "@", "=", "+", "," sind in Pfadsegmenten erlaubt und stecken in
+        // Teams-/Mail-IDs ("19:…@thread.tacv2", "…AAA=") — wie bisher roh lassen.
+        return strtr(rawurlencode($value), ['%3A' => ':', '%40' => '@', '%3D' => '=', '%2B' => '+', '%2C' => ',']);
+    }
+
+    /**
+     * Folgt einem @odata.nextLink (Cursor). Nur Graph-URLs — der Token darf
+     * nie an einen fremden Host gehen.
+     *
+     * @throws Microsoft365ApiException
+     */
+    public function getNextPage(User $user, string $nextLink, array $headers = []): array
+    {
+        $baseUrl = rtrim(config('user-connectors.microsoft365.graph_base_url', 'https://graph.microsoft.com/v1.0'), '/');
+        if (!str_starts_with($nextLink, $baseUrl . '/')) {
+            throw new \InvalidArgumentException('Ungültiger Cursor — erwartet wird die next_link/cursor-URL aus einer vorherigen Antwort.');
+        }
+
+        return $this->request($user, 'GET', substr($nextLink, strlen($baseUrl)), [], [], $headers);
     }
 
     /**
@@ -51,9 +93,9 @@ class Microsoft365ApiService
      *
      * @throws Microsoft365ApiException
      */
-    public function get(User $user, string $path, array $query = []): array
+    public function get(User $user, string $path, array $query = [], array $headers = []): array
     {
-        return $this->request($user, 'GET', $path, $query);
+        return $this->request($user, 'GET', $path, $query, [], $headers);
     }
 
     /**
@@ -61,9 +103,9 @@ class Microsoft365ApiService
      *
      * @throws Microsoft365ApiException
      */
-    public function post(User $user, string $path, array $body = []): array
+    public function post(User $user, string $path, array $body = [], array $headers = []): array
     {
-        return $this->request($user, 'POST', $path, [], $body);
+        return $this->request($user, 'POST', $path, [], $body, $headers);
     }
 
     /**
@@ -71,9 +113,9 @@ class Microsoft365ApiService
      *
      * @throws Microsoft365ApiException
      */
-    public function patch(User $user, string $path, array $body = []): array
+    public function patch(User $user, string $path, array $body = [], array $headers = []): array
     {
-        return $this->request($user, 'PATCH', $path, [], $body);
+        return $this->request($user, 'PATCH', $path, [], $body, $headers);
     }
 
     /**
@@ -108,7 +150,7 @@ class Microsoft365ApiService
         return false;
     }
 
-    protected function request(User $user, string $method, string $path, array $query = [], array $body = []): array
+    protected function request(User $user, string $method, string $path, array $query = [], array $body = [], array $headers = []): array
     {
         $connection = $this->resolveConnection($user);
         $token = $this->connectorService->getValidAccessToken($connection);
@@ -126,10 +168,11 @@ class Microsoft365ApiService
             $http = Http::withToken($token)
                 ->timeout($timeout)
                 ->connectTimeout($connectTimeout)
-                ->withHeaders(['Accept' => 'application/json', 'Content-Type' => 'application/json']);
+                ->withHeaders(array_merge(['Accept' => 'application/json', 'Content-Type' => 'application/json'], $headers));
 
+            // Ein nextLink bringt seine Query (inkl. $skiptoken) schon mit.
             $response = match ($method) {
-                'GET' => $http->get($url, $query),
+                'GET' => $http->get($url, $query ?: null),
                 'POST' => $http->post($url, $body),
                 'PATCH' => $http->patch($url, $body),
                 'DELETE' => $http->delete($url),

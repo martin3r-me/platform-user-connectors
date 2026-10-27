@@ -2,21 +2,22 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
 use Platform\UserConnectors\DTOs\Pagination;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365TeamsConnector;
 
-class ListTeamsChannelMessagesTool implements ToolContract, ToolMetadataContract
+class ListTeamsChannelMessagesTool extends Microsoft365Tool
 {
-    public function getName(): string { return 'user-connectors.microsoft365.teams.channel.messages.list'; }
+    public function getName(): string
+    {
+        return 'user-connectors.microsoft365.teams.channel.messages.list';
+    }
 
     public function getDescription(): string
     {
-        return 'Listet Nachrichten in einem Teams-Channel. Erwartet channel_id im Format "teamId:channelId".';
+        return 'Liest Beiträge eines Teams-Channels (Body als Klartext). Mit thread_id die Antworten in diesem Thread. '
+            . 'Ältere Beiträge: next_cursor als cursor übergeben.';
     }
 
     public function getSchema(): array
@@ -24,38 +25,41 @@ class ListTeamsChannelMessagesTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer'],
-                'channel_id' => ['type' => 'string', 'description' => 'Format "teamId:channelId".'],
-                'per_page' => ['type' => 'integer', 'description' => 'Default 25.'],
+                'connection_id' => self::connectionProperty(),
+                'channel_id' => ['type' => 'string', 'description' => '"teamId:channelId" (id aus teams.channels.list).'],
+                'thread_id' => ['type' => 'string', 'description' => 'Optional. id eines Beitrags → dessen Antworten.'],
+                'per_page' => ['type' => 'integer', 'description' => '1–' . Microsoft365TeamsConnector::MAX_MESSAGES_PER_PAGE . '. Default 25.'],
+                'cursor' => self::cursorProperty(),
+                'body_format' => ['type' => 'string', 'enum' => ['text', 'html'], 'description' => 'Default text.'],
+                'include_system' => ['type' => 'boolean', 'description' => 'Default false.'],
             ],
             'required' => ['channel_id'],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
-        try {
-            $connector = app(Microsoft365TeamsConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365TeamsConnector(
-                    app(Microsoft365ApiService::class)->forConnection((int) $arguments['connection_id'])
-                );
-            }
-            $pagination = new Pagination(page: 1, perPage: (int) ($arguments['per_page'] ?? 25));
-            $result = $connector->getChannelMessages($context->user, (string) $arguments['channel_id'], $pagination);
-            return ToolResult::success($result);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
-        }
+        $result = $this->teams($arguments)->getChannelMessages(
+            $context->user,
+            $this->requireString($arguments, 'channel_id'),
+            new Pagination(perPage: (int) ($arguments['per_page'] ?? 25)),
+            [
+                'thread_id' => $arguments['thread_id'] ?? null,
+                'cursor' => $arguments['cursor'] ?? null,
+                'body_format' => $arguments['body_format'] ?? 'text',
+                'include_system' => (bool) $this->optionalBool($arguments, 'include_system'),
+            ],
+        );
+
+        return ToolResult::success(array_filter([
+            'count' => count($result['messages']),
+            'messages' => $result['messages'],
+            'next_cursor' => $result['next_cursor'],
+        ], fn ($v) => $v !== null));
     }
 
     public function getMetadata(): array
     {
-        return ['category' => 'inspection', 'tags' => ['microsoft365', 'teams', 'channel', 'messages', 'list'],
-            'read_only' => true, 'requires_auth' => true, 'risk_level' => 'read', 'idempotent' => true,
-            'cost_class' => 'external_api_free'];
+        return self::readMetadata(['teams', 'channel', 'messages', 'thread', 'replies', 'list', 'read'], ['category' => 'inspection']);
     }
 }

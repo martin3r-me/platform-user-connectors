@@ -2,14 +2,13 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
 use Platform\UserConnectors\Services\ConnectionResolver;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365ConnectorService;
+use Platform\UserConnectors\Services\Microsoft365\Microsoft365EventTime;
 
-class TestConnectionTool implements ToolContract, ToolMetadataContract
+class TestConnectionTool extends Microsoft365Tool
 {
     public function getName(): string
     {
@@ -18,65 +17,48 @@ class TestConnectionTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Testet die Microsoft 365 Verbindung (OAuth2 Token-Validierung und Graph API Erreichbarkeit).';
+        return 'Testet die Microsoft-365-Verbindung (Token + Graph /me) und liefert Konto, Connection-ID und Plattform-Zeitzone. '
+            . 'Erste Hilfe, wenn Mail-/Kalender-/Teams-Tools mit UNAUTHORIZED oder NO_CONNECTION scheitern.';
     }
 
     public function getSchema(): array
     {
         return [
             'type' => 'object',
-            'properties' => [
-                'connection_id' => ['type' => 'integer', 'description' => 'Optionale Connection-ID.'],
-            ],
-            'required' => [],
+            'properties' => ['connection_id' => self::connectionProperty()],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
+        $service = app(Microsoft365ConnectorService::class);
+        $connection = !empty($arguments['connection_id'])
+            ? app(ConnectionResolver::class)->resolveById((int) $arguments['connection_id'], $context->user)
+            : $service->getConnectionForUser($context->user);
+
+        if (!$connection || $connection->connector?->key !== 'microsoft365') {
+            return ToolResult::error('Keine (zugängliche) Microsoft-365-Verbindung gefunden.', 'NO_CONNECTION');
         }
 
-        try {
-            $service = app(Microsoft365ConnectorService::class);
-            $connectionId = $arguments['connection_id'] ?? null;
-
-            if ($connectionId) {
-                $resolver = app(ConnectionResolver::class);
-                $connection = $resolver->resolveById($connectionId, $context->user);
-            } else {
-                $connection = $service->getConnectionForUser($context->user);
-            }
-
-            if (!$connection) {
-                return ToolResult::error('NO_CONNECTION', 'Keine Microsoft 365 Verbindung konfiguriert.');
-            }
-
-            $result = $service->testConnection($connection);
-
-            if ($result['success']) {
-                return ToolResult::success([
-                    'status' => 'connected',
-                    'message' => $result['message'],
-                    'connection_id' => $connection->id,
-                ]);
-            }
-
-            return ToolResult::error('CONNECTION_FAILED', $result['message']);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
+        $result = $service->testConnection($connection);
+        if (!$result['success']) {
+            return ToolResult::error($result['message'], 'CONNECTION_FAILED');
         }
+
+        $profile = $connection->credentials['profile'] ?? [];
+
+        return ToolResult::success([
+            'status' => 'connected',
+            'message' => $result['message'],
+            'connection_id' => $connection->id,
+            'account' => $profile['mail'] ?? $profile['userPrincipalName'] ?? null,
+            'shared' => (int) $connection->owner_user_id !== (int) $context->user->id,
+            'timezone' => Microsoft365EventTime::defaultTimezone(),
+        ]);
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'query',
-            'tags' => ['microsoft365', 'test', 'connectivity'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'safe',
-        ];
+        return self::readMetadata(['test', 'connectivity', 'diagnose']);
     }
 }

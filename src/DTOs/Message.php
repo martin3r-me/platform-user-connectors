@@ -19,6 +19,9 @@ class Message
         public readonly ?string $threadId,
         public readonly array $attachments,
         public readonly array $raw,
+        public readonly array $cc = [],
+        public readonly ?string $fromName = null,
+        public readonly ?string $webLink = null,
     ) {}
 
     public function toArray(): array
@@ -35,6 +38,10 @@ class Message
             'is_read' => $this->isRead,
             'thread_id' => $this->threadId,
             'attachments' => $this->attachments,
-        ];
+        ] + array_filter([
+            'from_name' => $this->fromName,
+            'cc' => $this->cc ?: null,
+            'web_link' => $this->webLink,
+        ], fn ($v) => $v !== null);
     }
 }

@@ -73,6 +73,10 @@ return [
 
     'microsoft365' => [
         'graph_base_url' => 'https://graph.microsoft.com/v1.0',
+        // IANA-Zeitzone, in der naive Zeitangaben (ohne Offset) interpretiert und
+        // Kalender-Events ausgegeben werden. Ganztags-Termine werden in dieser Zone
+        // von 00:00 bis 00:00 angelegt — sonst rutschen sie über zwei Tage.
+        'timezone' => env('USER_CONNECTORS_MS365_TIMEZONE', 'Europe/Berlin'),
         'timeout' => ['default' => 30, 'connect' => 10],
         'subscriptions' => [
             'enabled' => true,

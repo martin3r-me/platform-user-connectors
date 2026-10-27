@@ -2,14 +2,12 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
+use Platform\UserConnectors\DTOs\Message;
 use Platform\UserConnectors\DTOs\Pagination;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365MailConnector;
 
-class ListMailTool implements ToolContract, ToolMetadataContract
+class ListMailTool extends Microsoft365Tool
 {
     public function getName(): string
     {
@@ -18,7 +16,11 @@ class ListMailTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Listet E-Mails aus dem Outlook-Postfach des Users auf. Unterstützt Ordner-Filter (inbox, sentitems, drafts), Volltextsuche (Absender/Betreff/Body via Microsoft Graph), Absender- und Zeitraum-Filter, Pagination und Lese-Status-Filter.';
+        return 'Listet oder sucht E-Mails im Outlook-Postfach (neueste zuerst) — oder liest mit external_mail_id eine einzelne Mail komplett. '
+            . 'Filter: folder, from, date_from/date_to, is_read, has_attachments; search = Volltext über Absender/Betreff/Body '
+            . '(KQL möglich, z. B. "subject:Angebot"). Alle Filter sind frei kombinierbar. '
+            . 'body_format: preview (Default, Kurzvorschau), text (voller Body als Klartext — beste Wahl zum Lesen), html, none. '
+            . 'Weitere Seiten: next_cursor als cursor übergeben. Die id jeder Mail ist die external_mail_id für reply/forward/attachment.content.';
     }
 
     public function getSchema(): array
@@ -26,98 +28,98 @@ class ListMailTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer', 'description' => 'Optionale Connection-ID.'],
-                'folder' => ['type' => 'string', 'description' => 'Mail-Ordner: inbox, sentitems, drafts, deleteditems. Standard: alle.'],
-                'search' => ['type' => 'string', 'description' => 'Volltextsuche über Absender, Betreff und Body (serverseitig via Microsoft Graph $search). Bei gesetzter Suche entfällt die Sortierung nach Datum — Graph sortiert nach Relevanz.'],
-                'from' => ['type' => 'string', 'description' => 'Filter: exakte Absender-E-Mail-Adresse.'],
-                'date_from' => ['type' => 'string', 'description' => 'Filter: nur Mails empfangen ab diesem Zeitpunkt (ISO-8601 oder von Carbon parsbares Datum).'],
-                'date_to' => ['type' => 'string', 'description' => 'Filter: nur Mails empfangen bis zu diesem Zeitpunkt (ISO-8601 oder von Carbon parsbares Datum).'],
-                'is_read' => ['type' => ['string', 'boolean'], 'description' => 'Filter: true/false (als Boolean oder String).'],
-                'page' => ['type' => 'integer', 'description' => 'Seite (ab 1). Standard: 1.'],
-                'per_page' => ['type' => 'integer', 'description' => 'Einträge pro Seite. Standard: 25.'],
+                'connection_id' => self::connectionProperty(),
+                'external_mail_id' => ['type' => 'string', 'description' => 'Optional. Einzelne Mail per Graph-Message-ID abrufen (Default body_format=text). Andere Filter werden ignoriert.'],
+                'folder' => ['type' => 'string', 'description' => 'Ordner: inbox, sentitems, drafts, deleteditems, junkemail, archive oder Ordner-ID. Default: alle Ordner.'],
+                'search' => ['type' => 'string', 'description' => 'Volltextsuche (Absender, Betreff, Body). Ergebnisse nach Datum, kein total.'],
+                'from' => ['type' => 'string', 'description' => 'Absender-E-Mail-Adresse (exakt).'],
+                'date_from' => ['type' => 'string', 'description' => 'Empfangen ab (2026-11-03 oder ISO-8601).'],
+                'date_to' => ['type' => 'string', 'description' => 'Empfangen bis (reines Datum = einschließlich dieses Tages).'],
+                'is_read' => ['type' => 'boolean', 'description' => 'false = nur ungelesene, true = nur gelesene.'],
+                'has_attachments' => ['type' => 'boolean', 'description' => 'Nur Mails mit (true) / ohne (false) Anhänge.'],
+                'body_format' => ['type' => 'string', 'enum' => ['preview', 'text', 'html', 'none', 'full'], 'description' => 'Default: preview (bei external_mail_id: text). "full" = html.'],
+                'per_page' => ['type' => 'integer', 'description' => 'Treffer pro Seite (1–100). Default 25.'],
                 'limit' => ['type' => 'integer', 'description' => 'Alias für per_page.'],
-                'body_format' => [
-                    'type' => 'string',
-                    'enum' => ['full', 'preview', 'none'],
-                    'description' => 'Body-Format: "full" (Standard, kompletter HTML-Body je Mail), "preview" (nur bodyPreview/Kurzform) oder "none" (kein Body-Feld — für reine Trefferlisten, spart am meisten Response-Größe).',
-                ],
+                'page' => ['type' => 'integer', 'description' => 'Seite ab 1. Bei search max. 10 — danach cursor nutzen.'],
+                'cursor' => self::cursorProperty(),
+                'include_inline_attachments' => ['type' => 'boolean', 'description' => 'Default false: eingebettete Bilder (Signaturen, Logos) werden nicht als Anhang gelistet.'],
             ],
             'required' => [],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
+        $connector = $this->mail($arguments);
+        $includeInline = (bool) $this->optionalBool($arguments, 'include_inline_attachments');
 
-        try {
-            $connector = app(Microsoft365MailConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365MailConnector(
-                    app(\Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService::class)
-                        ->forConnection($arguments['connection_id'])
-                );
-            }
-
-            $filters = [];
-            if (!empty($arguments['folder'])) {
-                $filters['folder'] = $arguments['folder'];
-            }
-            if (!empty($arguments['search'])) {
-                $filters['search'] = $arguments['search'];
-            }
-            if (!empty($arguments['from'])) {
-                $filters['from'] = $arguments['from'];
-            }
-            if (!empty($arguments['date_from'])) {
-                $filters['date_from'] = $arguments['date_from'];
-            }
-            if (!empty($arguments['date_to'])) {
-                $filters['date_to'] = $arguments['date_to'];
-            }
-            if (isset($arguments['is_read'])) {
-                $filters['is_read'] = $arguments['is_read'];
-            }
-            if (!empty($arguments['body_format'])) {
-                $filters['body_format'] = $arguments['body_format'];
-            }
-
-            $pagination = new Pagination(
-                page: $arguments['page'] ?? 1,
-                perPage: $arguments['per_page'] ?? $arguments['limit'] ?? 25,
+        if (!empty($arguments['external_mail_id'])) {
+            $message = $connector->getMessage(
+                $context->user,
+                trim((string) $arguments['external_mail_id']),
+                (string) ($arguments['body_format'] ?? 'text'),
             );
 
-            $result = $connector->listMessages($context->user, $filters, $pagination);
-
-            return ToolResult::success([
-                'messages' => array_map(fn ($m) => $m->toArray(), $result['messages']),
-                'pagination' => $result['pagination']->toArray(),
-                'filters' => [
-                    'folder' => $arguments['folder'] ?? null,
-                    'search' => $arguments['search'] ?? null,
-                    'from' => $arguments['from'] ?? null,
-                    'date_from' => $arguments['date_from'] ?? null,
-                    'date_to' => $arguments['date_to'] ?? null,
-                    'is_read' => $arguments['is_read'] ?? null,
-                    'body_format' => $arguments['body_format'] ?? 'full',
-                ],
-            ]);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
+            return ToolResult::success(['message' => $this->present($message, $includeInline, true)]);
         }
+
+        $filters = array_filter([
+            'folder' => $arguments['folder'] ?? null,
+            'search' => $arguments['search'] ?? null,
+            'from' => $arguments['from'] ?? null,
+            'date_from' => $arguments['date_from'] ?? null,
+            'date_to' => $arguments['date_to'] ?? null,
+            'is_read' => $this->optionalBool($arguments, 'is_read'),
+            'has_attachments' => $this->optionalBool($arguments, 'has_attachments'),
+            'body_format' => $arguments['body_format'] ?? 'preview',
+            'cursor' => $arguments['cursor'] ?? null,
+        ], fn ($v) => $v !== null && $v !== '');
+
+        $result = $connector->listMessages($context->user, $filters, new Pagination(
+            page: max(1, (int) ($arguments['page'] ?? 1)),
+            perPage: max(1, min(100, (int) ($arguments['per_page'] ?? $arguments['limit'] ?? 25))),
+        ));
+
+        /** @var Pagination $pagination */
+        $pagination = $result['pagination'];
+
+        return ToolResult::success(array_filter([
+            'count' => count($result['messages']),
+            'total' => $pagination->total,
+            'messages' => array_map(fn (Message $m) => $this->present($m, $includeInline, false), $result['messages']),
+            'next_cursor' => $pagination->nextLink,
+            'notes' => $result['notes'] ?: null,
+            'filters' => array_diff_key($filters, ['cursor' => true]),
+        ], fn ($v) => $v !== null));
+    }
+
+    protected function present(Message $message, bool $includeInline, bool $single): array
+    {
+        $data = $message->toArray();
+        unset($data['provider']);
+
+        if ($data['body_type'] === 'none' || ($data['body'] === '' && !$single)) {
+            unset($data['body'], $data['body_type']);
+        }
+        if (!$includeInline) {
+            $data['attachments'] = array_values(array_filter($data['attachments'], fn ($a) => empty($a['is_inline'])));
+        }
+        if ($data['attachments'] === []) {
+            unset($data['attachments']);
+        }
+
+        return $data;
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'query',
-            'tags' => ['microsoft365', 'outlook', 'mail', 'email', 'list', 'search', 'channel:mail', 'action:list', 'action:search'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'safe',
-            'cost_class' => 'external_api_free',
-        ];
+        return self::readMetadata(['outlook', 'mail', 'email', 'list', 'search', 'read', 'channel:mail', 'action:list', 'action:search'], [
+            'examples' => [
+                'Ungelesene Mails von heute: {"is_read": false, "date_from": "2026-11-03"}',
+                'Suche: {"search": "Angebot", "from": "kunde@firma.de"}',
+                'Mail lesen: {"external_mail_id": "AAMk…", "body_format": "text"}',
+            ],
+            'related_tools' => ['user-connectors.microsoft365.mail.reply', 'user-connectors.microsoft365.mail.forward', 'user-connectors.microsoft365.mail.attachment.content'],
+        ]);
     }
 }

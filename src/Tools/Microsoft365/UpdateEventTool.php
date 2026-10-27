@@ -2,85 +2,90 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Carbon\Carbon;
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365CalendarConnector;
 
-class UpdateEventTool implements ToolContract, ToolMetadataContract
+class UpdateEventTool extends Microsoft365Tool
 {
-    public function getName(): string { return 'user-connectors.microsoft365.calendar.update'; }
+    use CalendarEventSchema;
+
+    public function getName(): string
+    {
+        return 'user-connectors.microsoft365.calendar.update';
+    }
 
     public function getDescription(): string
     {
-        return 'Aktualisiert einen Outlook-Kalender-Event. Übergebene Felder werden gepatcht — '
-            . 'title, start, end, location, description. Alles optional außer event_id.';
+        return 'Ändert einen bestehenden Outlook-Termin — nur die übergebenen Felder. '
+            . 'Verschieben: nur start angeben, die Dauer bleibt erhalten. Ganztags umstellen: all_day=true (oder start als reines Datum). '
+            . 'Frei/belegt ändern: show_as. attendees ersetzt die komplette Teilnehmerliste (Teilnehmer werden benachrichtigt).';
     }
 
     public function getSchema(): array
     {
+        $timing = self::timingProperties();
+        $timing['show_as']['description'] = 'Anzeigen als: free, busy, tentative, oof, workingElsewhere.';
+
         return [
             'type' => 'object',
-            'properties' => [
-                'connection_id' => ['type' => 'integer'],
-                'event_id' => ['type' => 'string'],
-                'title' => ['type' => 'string'],
-                'start' => ['type' => 'string', 'description' => 'ISO-8601.'],
-                'end' => ['type' => 'string', 'description' => 'ISO-8601.'],
-                'location' => ['type' => 'string'],
-                'description' => ['type' => 'string'],
-            ],
+            'properties' => array_merge(
+                [
+                    'connection_id' => self::connectionProperty(),
+                    'event_id' => ['type' => 'string', 'description' => 'Termin-ID (id aus calendar.list).'],
+                    'title' => ['type' => 'string'],
+                ],
+                $timing,
+                self::detailProperties(),
+            ),
             'required' => ['event_id'],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function errorPrefix(): string
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
+        return 'Termin ändern fehlgeschlagen';
+    }
+
+    protected function handle(array $arguments, ToolContext $context): ToolResult
+    {
+        $eventId = $this->requireString($arguments, 'event_id');
+
+        $changes = $this->detailOptions($arguments) + array_filter([
+            'title' => isset($arguments['title']) ? (string) $arguments['title'] : null,
+            'start' => $arguments['start'] ?? null,
+            'end' => $arguments['end'] ?? null,
+            'all_day' => $this->optionalBool($arguments, 'all_day'),
+            'timezone' => $arguments['timezone'] ?? null,
+        ], fn ($v) => $v !== null && $v !== '');
+
+        if (array_key_exists('attendees', $arguments)) {
+            $changes['attendees'] = (array) $arguments['attendees'];
+            $changes['rooms'] = $this->stringList($arguments['rooms'] ?? []);
+        } elseif (!empty($arguments['rooms'])) {
+            throw new \InvalidArgumentException('rooms nur zusammen mit attendees ändern (die Teilnehmerliste wird komplett ersetzt).');
         }
 
-        $changes = [];
-        if (isset($arguments['title'])) {
-            $changes['title'] = (string) $arguments['title'];
-        }
-        if (isset($arguments['start'])) {
-            $changes['start'] = Carbon::parse((string) $arguments['start']);
-        }
-        if (isset($arguments['end'])) {
-            $changes['end'] = Carbon::parse((string) $arguments['end']);
-        }
-        if (isset($arguments['location'])) {
-            $changes['location'] = (string) $arguments['location'];
-        }
-        if (isset($arguments['description'])) {
-            $changes['description'] = (string) $arguments['description'];
-        }
-        if (empty($changes)) {
-            return ToolResult::error('VALIDATION_ERROR', 'Mindestens ein Feld zum Updaten erforderlich.');
+        if (array_diff(array_keys($changes), ['timezone']) === []) {
+            throw new \InvalidArgumentException('Mindestens ein Feld zum Ändern angeben.');
         }
 
-        try {
-            $connector = app(Microsoft365CalendarConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365CalendarConnector(
-                    app(Microsoft365ApiService::class)->forConnection((int) $arguments['connection_id'])
-                );
-            }
-            $event = $connector->updateEvent($context->user, (string) $arguments['event_id'], $changes);
-            return ToolResult::success(['event' => $event->toArray(), 'status' => 'updated']);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Update fehlgeschlagen: ' . $e->getMessage());
-        }
+        $event = $this->calendar($arguments)->updateEvent($context->user, $eventId, $changes);
+        $data = $event->toArray();
+
+        return ToolResult::success([
+            'status' => 'updated',
+            'summary' => $this->summarize($data),
+            'event' => $data,
+        ]);
     }
 
     public function getMetadata(): array
     {
-        return ['category' => 'action', 'tags' => ['microsoft365', 'calendar', 'event', 'update'],
-            'read_only' => false, 'requires_auth' => true, 'risk_level' => 'write',
-            'confirmation_required' => true, 'cost_class' => 'external_api_free'];
+        return self::writeMetadata(['outlook', 'calendar', 'event', 'termin', 'update', 'reschedule'], [
+            'examples' => [
+                'Auf ganztags + frei: {"event_id": "AAMk…", "all_day": true, "show_as": "free"}',
+                'Verschieben (Dauer bleibt): {"event_id": "AAMk…", "start": "2026-11-04T14:00"}',
+            ],
+        ]);
     }
 }

@@ -2,20 +2,24 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365TeamsConnector;
 
-class SendTeamsChannelMessageTool implements ToolContract, ToolMetadataContract
+/**
+ * Neuer Channel-Beitrag oder Antwort in einen Thread — ersetzt das frühere
+ * teams.channel.reply.
+ */
+class SendTeamsChannelMessageTool extends Microsoft365Tool
 {
-    public function getName(): string { return 'user-connectors.microsoft365.teams.channel.send'; }
+    public function getName(): string
+    {
+        return 'user-connectors.microsoft365.teams.channel.send';
+    }
 
     public function getDescription(): string
     {
-        return 'Sendet eine Nachricht in einen Teams-Channel. Erwartet channel_id im Format "teamId:channelId".';
+        return 'Postet in einen Teams-Channel — als neuer Beitrag oder mit reply_to_message_id als Antwort in einen bestehenden Thread. '
+            . 'channel_id = "teamId:channelId" aus teams.channels.list. Body: Plain Text (Umbrüche bleiben) oder HTML.';
     }
 
     public function getSchema(): array
@@ -23,37 +27,43 @@ class SendTeamsChannelMessageTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer'],
-                'channel_id' => ['type' => 'string', 'description' => 'Format "teamId:channelId".'],
+                'connection_id' => self::connectionProperty(),
+                'channel_id' => ['type' => 'string', 'description' => '"teamId:channelId".'],
                 'body' => ['type' => 'string'],
+                'reply_to_message_id' => ['type' => 'string', 'description' => 'Optional. id des Thread-Beitrags, auf den geantwortet wird.'],
+                'content_type' => ['type' => 'string', 'enum' => ['auto', 'html', 'text'], 'description' => 'Default auto.'],
             ],
             'required' => ['channel_id', 'body'],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function errorPrefix(): string
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
-        try {
-            $connector = app(Microsoft365TeamsConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365TeamsConnector(
-                    app(Microsoft365ApiService::class)->forConnection((int) $arguments['connection_id'])
-                );
-            }
-            $result = $connector->sendChannelMessage($context->user, (string) $arguments['channel_id'], (string) $arguments['body']);
-            return ToolResult::success(['message_id' => $result['id'] ?? null, 'status' => 'sent']);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Send fehlgeschlagen: ' . $e->getMessage());
-        }
+        return 'Channel-Senden fehlgeschlagen';
+    }
+
+    protected function handle(array $arguments, ToolContext $context): ToolResult
+    {
+        $replyTo = trim((string) ($arguments['reply_to_message_id'] ?? $arguments['message_id'] ?? '')) ?: null;
+
+        $result = $this->teams($arguments)->sendChannelMessage(
+            $context->user,
+            $this->requireString($arguments, 'channel_id'),
+            $this->requireString($arguments, 'body'),
+            (string) ($arguments['content_type'] ?? 'auto'),
+            $replyTo,
+        );
+
+        return ToolResult::success(array_filter([
+            'status' => 'sent',
+            'message_id' => $result['id'] ?? null,
+            'reply_to_message_id' => $replyTo,
+            'web_url' => $result['web_url'] ?? null,
+        ]));
     }
 
     public function getMetadata(): array
     {
-        return ['category' => 'action', 'tags' => ['microsoft365', 'teams', 'channel', 'send'],
-            'read_only' => false, 'requires_auth' => true, 'risk_level' => 'write',
-            'confirmation_required' => true, 'cost_class' => 'external_api_free'];
+        return self::writeMetadata(['teams', 'channel', 'send', 'reply', 'thread', 'channel:teams-channel', 'action:send']);
     }
 }

@@ -8,120 +8,118 @@ use Platform\UserConnectors\DTOs\Pagination;
 
 class Microsoft365TeamsConnector implements PresenceConnector
 {
+    /** Graph-Maximum für $top bei Chat-/Channel-Nachrichten. */
+    public const MAX_MESSAGES_PER_PAGE = 50;
+
     public function __construct(
         protected Microsoft365ApiService $api,
     ) {}
 
-    public function listChannels(User $user): array
+    /**
+     * Channels über alle (oder ein) Team(s). last_message_at kostet einen
+     * Graph-Call pro Channel und ist deshalb opt-in.
+     */
+    public function listChannels(User $user, ?string $teamId = null, bool $includeLastMessage = false): array
     {
-        // Get teams the user is member of, then channels per team
-        $teamsData = $this->api->get($user, '/me/joinedTeams', [
-            '$select' => 'id,displayName,description',
-        ]);
+        $teams = $teamId !== null && $teamId !== ''
+            ? [['id' => $teamId, 'name' => null]]
+            : $this->listJoinedTeams($user)['teams'];
 
         $channels = [];
-        foreach ($teamsData['value'] ?? [] as $team) {
-            $teamId = $team['id'];
-            $channelsData = $this->api->get($user, "/teams/{$teamId}/channels", [
+        foreach ($teams as $team) {
+            $channelsData = $this->api->get($user, '/teams/' . Microsoft365ApiService::segment($team['id']) . '/channels', [
                 '$select' => 'id,displayName,description,membershipType',
             ]);
 
             foreach ($channelsData['value'] ?? [] as $ch) {
-                $channels[] = [
-                    'id' => $ch['id'],
-                    'team_id' => $teamId,
-                    'team_name' => $team['displayName'] ?? '',
+                $channel = [
+                    // Kombinierte ID — direkt für channel.send/messages.list verwendbar.
+                    'id' => $team['id'] . ':' . $ch['id'],
+                    'channel_id' => $ch['id'],
+                    'team_id' => $team['id'],
+                    'team_name' => $team['name'],
                     'name' => $ch['displayName'] ?? '',
                     'description' => $ch['description'] ?? null,
                     'membership_type' => $ch['membershipType'] ?? 'standard',
-                    'last_message_at' => $this->fetchLastMessageAt($user, $teamId, $ch['id']),
                 ];
+                if ($includeLastMessage) {
+                    $channel['last_message_at'] = $this->fetchLastMessageAt($user, $team['id'], $ch['id']);
+                }
+                $channels[] = $channel;
             }
         }
 
-        return ['channels' => $channels];
+        return ['teams' => $teamId ? [] : $teams, 'channels' => $channels];
     }
 
     /**
-     * Graph liefert für Channels (anders als für Chats) keinen Lesestatus
-     * und kein lastMessageReadDateTime — ein echter Unread-Indikator ist
-     * darüber nicht baubar. Als Proxy nehmen wir den Zeitstempel der
-     * jüngsten Nachricht: die Liste ist bereits standardmäßig nach
-     * Aktivität der Reply-Chain sortiert, $top=1 genügt also.
+     * Graph liefert für Channels keinen Lesestatus — als Aktivitäts-Proxy
+     * dient der Zeitstempel der jüngsten Nachricht.
      */
     protected function fetchLastMessageAt(User $user, string $teamId, string $channelId): ?string
     {
         try {
-            $data = $this->api->get($user, "/teams/{$teamId}/channels/{$channelId}/messages", [
-                '$top' => 1,
-            ]);
-
+            $data = $this->api->get($user, $this->channelPath($teamId, $channelId) . '/messages', ['$top' => 1]);
             $latest = $data['value'][0] ?? null;
 
             return $latest['lastModifiedDateTime'] ?? $latest['createdDateTime'] ?? null;
-        } catch (\Throwable $e) {
+        } catch (\Throwable) {
             return null;
         }
     }
 
-    public function getChannelMessages(User $user, string $channelId, ?Pagination $pagination = null): array
-    {
-        // channelId format: "teamId:channelId"
-        [$teamId, $chId] = $this->parseChannelId($channelId);
-
-        $top = $pagination?->perPage ?? 25;
-
-        $data = $this->api->get($user, "/teams/{$teamId}/channels/{$chId}/messages", [
-            '$top' => $top,
-        ]);
-
-        $messages = array_map(fn (array $m) => [
-            'id' => $m['id'] ?? '',
-            'from' => $m['from']['user']['displayName'] ?? ($m['from']['user']['id'] ?? 'unknown'),
-            'from_id' => $m['from']['user']['id'] ?? null,
-            'body' => $m['body']['content'] ?? '',
-            'body_type' => strtolower($m['body']['contentType'] ?? 'text'),
-            'created_at' => $m['createdDateTime'] ?? null,
-        ], $data['value'] ?? []);
-
-        return [
-            'messages' => $messages,
-            'pagination' => new Pagination(
-                page: $pagination?->page ?? 1,
-                perPage: $top,
-            ),
-        ];
-    }
-
-    public function sendChannelMessage(User $user, string $channelId, string $body): array
+    /**
+     * Options: cursor, thread_id (Antworten eines Threads statt Root-Posts),
+     * body_format (text|html), include_system.
+     */
+    public function getChannelMessages(User $user, string $channelId, ?Pagination $pagination = null, array $options = []): array
     {
         [$teamId, $chId] = $this->parseChannelId($channelId);
+        $path = $this->channelPath($teamId, $chId) . '/messages';
+        if (!empty($options['thread_id'])) {
+            $path .= '/' . Microsoft365ApiService::segment((string) $options['thread_id']) . '/replies';
+        }
 
-        $data = $this->api->post($user, "/teams/{$teamId}/channels/{$chId}/messages", [
-            'body' => [
-                'contentType' => 'html',
-                'content' => $body,
-            ],
-        ]);
-
-        return [
-            'id' => $data['id'] ?? '',
-            'status' => 'sent',
-        ];
+        return $this->fetchMessages($user, $path, $pagination, $options);
     }
 
-    public function listChats(User $user): array
+    /**
+     * Sendet in einen Channel; mit $replyToMessageId als Antwort in den Thread.
+     * contentType: auto (Default — Plain Text mit Umbrüchen wird zu HTML), html, text.
+     */
+    public function sendChannelMessage(User $user, string $channelId, string $body, string $contentType = 'auto', ?string $replyToMessageId = null): array
     {
-        // Graph's /me/chats does not support $orderby on lastUpdatedDateTime
-        // (the only documented sortable field is lastMessagePreview/
-        // createdDateTime, which requires extra perms). We fetch without
-        // server-side ordering and sort the response client-side — same
-        // user-facing result, no permission rabbit hole.
-        $data = $this->api->get($user, '/me/chats', [
-            '$top' => 50,
-            '$select' => 'id,topic,chatType,lastUpdatedDateTime',
-            '$expand' => 'members',
-        ]);
+        [$teamId, $chId] = $this->parseChannelId($channelId);
+        $path = $this->channelPath($teamId, $chId) . '/messages';
+        if ($replyToMessageId !== null && $replyToMessageId !== '') {
+            $path .= '/' . Microsoft365ApiService::segment($replyToMessageId) . '/replies';
+        }
+
+        $data = $this->api->post($user, $path, ['body' => $this->bodyPayload($body, $contentType)]);
+
+        return ['id' => $data['id'] ?? '', 'status' => 'sent', 'web_url' => $data['webUrl'] ?? null];
+    }
+
+    public function replyToChannelMessage(User $user, string $channelId, string $messageId, string $body, string $contentType = 'auto'): array
+    {
+        return $this->sendChannelMessage($user, $channelId, $body, $contentType, $messageId);
+    }
+
+    /**
+     * Chats, neueste zuerst. Graph sortiert /me/chats nicht nach Aktivität —
+     * daher clientseitig. Options: limit (Default 50), search (Topic/Mitglied), cursor.
+     */
+    public function listChats(User $user, array $options = []): array
+    {
+        $limit = max(1, min(50, (int) ($options['limit'] ?? 50)));
+
+        $data = !empty($options['cursor'])
+            ? $this->api->getNextPage($user, (string) $options['cursor'])
+            : $this->api->get($user, '/me/chats', [
+                '$top' => $limit,
+                '$select' => 'id,topic,chatType,lastUpdatedDateTime,webUrl',
+                '$expand' => 'members',
+            ]);
 
         $chats = array_map(fn (array $c) => [
             'id' => $c['id'] ?? '',
@@ -130,25 +128,32 @@ class Microsoft365TeamsConnector implements PresenceConnector
             'last_updated' => $c['lastUpdatedDateTime'] ?? null,
             'members' => array_map(fn (array $m) => [
                 'name' => $m['displayName'] ?? null,
+                'email' => $m['email'] ?? null,
                 'user_id' => $m['userId'] ?? null,
             ], $c['members'] ?? []),
         ], $data['value'] ?? []);
 
-        // Newest first by last_updated; null timestamps sink to the end.
-        usort($chats, function ($a, $b) {
-            $ta = $a['last_updated'] ?? '';
-            $tb = $b['last_updated'] ?? '';
-            return strcmp($tb, $ta);
-        });
+        $search = mb_strtolower(trim((string) ($options['search'] ?? '')));
+        if ($search !== '') {
+            $chats = array_values(array_filter($chats, function (array $c) use ($search) {
+                $haystack = mb_strtolower(($c['topic'] ?? '') . ' ' . implode(' ', array_map(
+                    fn ($m) => ($m['name'] ?? '') . ' ' . ($m['email'] ?? ''),
+                    $c['members'],
+                )));
 
-        return ['chats' => $chats];
+                return str_contains($haystack, $search);
+            }));
+        }
+
+        usort($chats, fn ($a, $b) => strcmp($b['last_updated'] ?? '', $a['last_updated'] ?? ''));
+
+        return ['chats' => $chats, 'next_cursor' => $data['@odata.nextLink'] ?? null];
     }
 
     /**
-     * Creates a new Teams chat (1:1 or group). For group chats, pass
-     * member_user_ids with 2+ entries; for 1:1, exactly one other user.
-     * The signed-in user is implicitly added — caller does not need to
-     * include their own userId.
+     * Neuer Chat (1:1 oder Gruppe). Der angemeldete User wird ergänzt —
+     * Graph fügt den Aufrufer nicht automatisch hinzu. Für 1:1 liefert Graph
+     * einen bestehenden Chat zurück, statt einen zweiten anzulegen.
      */
     public function createChat(User $user, array $memberUserIds, ?string $topic = null): array
     {
@@ -157,29 +162,25 @@ class Microsoft365TeamsConnector implements PresenceConnector
             $memberUserIds,
         ))));
         if (empty($memberUserIds)) {
-            throw new \InvalidArgumentException('At least one member user_id is required.');
+            throw new \InvalidArgumentException('Mindestens ein Mitglied ist erforderlich.');
         }
 
-        // Resolve the signed-in user's Graph id (we need it as an explicit
-        // chat member; Graph does not auto-add the caller).
         $me = $this->api->get($user, '/me', ['$select' => 'id']);
         $myId = (string) ($me['id'] ?? '');
         if ($myId === '') {
-            throw new \RuntimeException('Could not resolve the signed-in user\'s Graph id.');
+            throw new \RuntimeException('Graph-ID des angemeldeten Users nicht ermittelbar.');
         }
         $allIds = array_values(array_unique(array_merge([$myId], $memberUserIds)));
 
         $chatType = count($allIds) > 2 ? 'group' : 'oneOnOne';
 
-        $members = array_map(fn ($id) => [
-            '@odata.type' => '#microsoft.graph.aadUserConversationMember',
-            'roles' => ['owner'],
-            'user@odata.bind' => "https://graph.microsoft.com/v1.0/users('{$id}')",
-        ], $allIds);
-
         $payload = [
             'chatType' => $chatType,
-            'members' => $members,
+            'members' => array_map(fn ($id) => [
+                '@odata.type' => '#microsoft.graph.aadUserConversationMember',
+                'roles' => ['owner'],
+                'user@odata.bind' => "https://graph.microsoft.com/v1.0/users('" . str_replace("'", "''", $id) . "')",
+            ], $allIds),
         ];
         if ($chatType === 'group' && $topic !== null && trim($topic) !== '') {
             $payload['topic'] = trim($topic);
@@ -192,26 +193,16 @@ class Microsoft365TeamsConnector implements PresenceConnector
             'chat_type' => $data['chatType'] ?? $chatType,
             'topic' => $data['topic'] ?? null,
             'member_count' => count($allIds),
+            'web_url' => $data['webUrl'] ?? null,
         ];
     }
 
     /**
-     * Resolve one or more email addresses to Graph user ids. Two strategies
-     * per email:
-     *   1. GET /users/{email} — works when the email equals the UPN
-     *   2. GET /users?$filter=mail eq '…' or userPrincipalName eq '…'
-     *      — covers the (common) case where the user's primary mail
-     *      differs from their UPN
-     *
-     * Returns an array with two keys so the caller can give the user a
-     * clear error per unresolved address instead of silently dropping it:
-     *
-     *   [
-     *     'resolved'   => array<string, string>  email => user_id
-     *     'unresolved' => array<int, array{email: string, reason: string}>
-     *   ]
+     * E-Mail-Adressen → Graph-User-IDs. Erst /users/{email} (Mail = UPN),
+     * dann $filter auf mail/UPN (abweichende Primäradresse).
      *
      * @param array<int, string> $emails
+     * @return array{resolved: array<string, string>, unresolved: array<int, array{email: string, reason: string}>}
      */
     public function resolveUserIds(User $user, array $emails): array
     {
@@ -224,23 +215,16 @@ class Microsoft365TeamsConnector implements PresenceConnector
                 continue;
             }
 
-            // Strategy 1: direct lookup (email as UPN).
             try {
-                $data = $this->api->get(
-                    $user,
-                    '/users/' . rawurlencode($email),
-                    ['$select' => 'id,mail,userPrincipalName']
-                );
+                $data = $this->api->get($user, '/users/' . rawurlencode($email), ['$select' => 'id,mail,userPrincipalName']);
                 if (!empty($data['id'])) {
                     $resolved[$email] = (string) $data['id'];
                     continue;
                 }
-            } catch (\Throwable $e) {
-                // Fall through to strategy 2.
+            } catch (\Throwable) {
+                // weiter mit Strategie 2
             }
 
-            // Strategy 2: filter on mail OR UPN (covers BHG-style mismatch
-            // between the displayed mail and the AAD UPN).
             $escaped = str_replace("'", "''", $email);
             try {
                 $data = $this->api->get($user, '/users', [
@@ -255,82 +239,47 @@ class Microsoft365TeamsConnector implements PresenceConnector
                 }
                 $unresolved[] = [
                     'email' => $email,
-                    'reason' => 'No user matched on UPN or mail — wrong domain, external account, or missing User.Read.All scope.',
+                    'reason' => 'Kein User mit dieser Mail/UPN — falsche Domain, externer Account oder fehlende User.Read.All-Berechtigung.',
                 ];
             } catch (\Throwable $e) {
-                $unresolved[] = [
-                    'email' => $email,
-                    'reason' => 'Lookup failed: ' . $e->getMessage(),
-                ];
+                $unresolved[] = ['email' => $email, 'reason' => 'Lookup fehlgeschlagen: ' . $e->getMessage()];
             }
         }
 
         return ['resolved' => $resolved, 'unresolved' => $unresolved];
     }
 
+    /**
+     * contentType: html (Default, Bestandsverhalten), text, auto.
+     */
     public function sendChatMessage(User $user, string $chatId, string $body, string $contentType = 'html'): array
     {
-        $data = $this->api->post($user, "/chats/{$chatId}/messages", [
-            'body' => [
-                'contentType' => in_array($contentType, ['html', 'text'], true) ? $contentType : 'html',
-                'content' => $body,
-            ],
+        $data = $this->api->post($user, '/chats/' . Microsoft365ApiService::segment($chatId) . '/messages', [
+            'body' => $this->bodyPayload($body, $contentType),
         ]);
 
-        return [
-            'id' => $data['id'] ?? '',
-            'status' => 'sent',
-        ];
+        return ['id' => $data['id'] ?? '', 'status' => 'sent', 'web_url' => $data['webUrl'] ?? null];
     }
 
     /**
-     * Read messages from a 1:1 or group chat.
+     * Options: cursor, body_format (text|html), include_system.
      */
-    public function getChatMessages(User $user, string $chatId, ?Pagination $pagination = null): array
+    public function getChatMessages(User $user, string $chatId, ?Pagination $pagination = null, array $options = []): array
     {
-        $top = $pagination?->perPage ?? 25;
-
-        $data = $this->api->get($user, "/chats/{$chatId}/messages", [
-            '$top' => $top,
-        ]);
-
-        $messages = array_map(fn (array $m) => [
-            'id' => $m['id'] ?? '',
-            'from' => $m['from']['user']['displayName'] ?? ($m['from']['user']['id'] ?? 'unknown'),
-            'from_id' => $m['from']['user']['id'] ?? null,
-            'body' => $m['body']['content'] ?? '',
-            'body_type' => strtolower($m['body']['contentType'] ?? 'text'),
-            'created_at' => $m['createdDateTime'] ?? null,
-        ], $data['value'] ?? []);
-
-        return [
-            'messages' => $messages,
-            'pagination' => new Pagination(
-                page: $pagination?->page ?? 1,
-                perPage: $top,
-            ),
-        ];
+        return $this->fetchMessages($user, '/chats/' . Microsoft365ApiService::segment($chatId) . '/messages', $pagination, $options);
     }
 
     /**
-     * Teams hat keinen nativen Chat-Forward — wir simulieren ihn als
-     * Quote-and-Send: Original-Inhalt als Blockquote oben, Kommentar
-     * darunter, dann normal in den Ziel-Chat senden.
+     * Teams hat keinen nativen Forward — Quote-and-Send in den Ziel-Chat.
      */
     public function forwardChatMessage(User $user, string $sourceChatId, string $sourceMessageId, string $targetChatId, string $comment = ''): array
     {
-        $original = $this->api->get($user, "/chats/{$sourceChatId}/messages/{$sourceMessageId}", []);
-        $originalBody = $original['body']['content'] ?? '';
-        $originalFrom = $original['from']['user']['displayName'] ?? 'unbekannt';
-        $originalAt = $original['createdDateTime'] ?? '';
+        $original = $this->api->get(
+            $user,
+            '/chats/' . Microsoft365ApiService::segment($sourceChatId) . '/messages/' . Microsoft365ApiService::segment($sourceMessageId),
+        );
 
-        $html = '<div>' . nl2br(htmlspecialchars($comment)) . '</div>'
-            . '<blockquote style="border-left:3px solid #888;padding-left:8px;color:#555;">'
-            . '<div><em>Weitergeleitet: ' . htmlspecialchars($originalFrom) . ' (' . htmlspecialchars($originalAt) . ')</em></div>'
-            . $originalBody
-            . '</blockquote>';
-
-        return $this->sendChatMessage($user, $targetChatId, $html, 'html');
+        return $this->sendChatMessage($user, $targetChatId, $this->quote($original, $comment), 'html');
     }
 
     public function listJoinedTeams(User $user): array
@@ -348,57 +297,134 @@ class Microsoft365TeamsConnector implements PresenceConnector
     }
 
     /**
-     * Antwort in einen bestehenden Channel-Thread (reply).
-     */
-    public function replyToChannelMessage(User $user, string $channelId, string $messageId, string $body, string $contentType = 'html'): array
-    {
-        [$teamId, $chId] = $this->parseChannelId($channelId);
-
-        $data = $this->api->post($user, "/teams/{$teamId}/channels/{$chId}/messages/{$messageId}/replies", [
-            'body' => [
-                'contentType' => in_array($contentType, ['html', 'text'], true) ? $contentType : 'html',
-                'content' => $body,
-            ],
-        ]);
-
-        return [
-            'id' => $data['id'] ?? '',
-            'status' => 'sent',
-        ];
-    }
-
-    /**
-     * Channel-Forward analog zu Chat-Forward: Quote+Send in einen
-     * (anderen) Channel.
+     * Channel-Forward: Quote-and-Send in einen (anderen) Channel.
      */
     public function forwardChannelMessage(User $user, string $sourceChannelId, string $sourceMessageId, string $targetChannelId, string $comment = ''): array
     {
         [$srcTeamId, $srcChId] = $this->parseChannelId($sourceChannelId);
-        $original = $this->api->get($user, "/teams/{$srcTeamId}/channels/{$srcChId}/messages/{$sourceMessageId}", []);
-        $originalBody = $original['body']['content'] ?? '';
-        $originalFrom = $original['from']['user']['displayName'] ?? 'unbekannt';
-        $originalAt = $original['createdDateTime'] ?? '';
+        $original = $this->api->get(
+            $user,
+            $this->channelPath($srcTeamId, $srcChId) . '/messages/' . Microsoft365ApiService::segment($sourceMessageId),
+        );
 
-        $html = '<div>' . nl2br(htmlspecialchars($comment)) . '</div>'
-            . '<blockquote style="border-left:3px solid #888;padding-left:8px;color:#555;">'
-            . '<div><em>Weitergeleitet: ' . htmlspecialchars($originalFrom) . ' (' . htmlspecialchars($originalAt) . ')</em></div>'
-            . $originalBody
-            . '</blockquote>';
-
-        return $this->sendChannelMessage($user, $targetChannelId, $html);
+        return $this->sendChannelMessage($user, $targetChannelId, $this->quote($original, $comment), 'html');
     }
 
     /**
-     * Parse combined channelId "teamId:channelId" into parts.
+     * HTML → lesbarer Text (für Agenten: spart Tokens, keine <p>/<div>-Suppe).
+     */
+    public static function htmlToText(string $html): string
+    {
+        $text = preg_replace('/<(br|\/p|\/div|\/li|\/h\d)\s*\/?>/i', "\n", $html);
+        $text = preg_replace('/<li[^>]*>/i', '- ', $text);
+        $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace("/[ \t\x{00A0}]+/u", ' ', $text);
+        $text = preg_replace("/\n\s*\n\s*\n+/", "\n\n", $text);
+
+        return trim($text);
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────
+
+    protected function fetchMessages(User $user, string $path, ?Pagination $pagination, array $options): array
+    {
+        $top = max(1, min(self::MAX_MESSAGES_PER_PAGE, $pagination?->perPage ?? 25));
+
+        $data = !empty($options['cursor'])
+            ? $this->api->getNextPage($user, (string) $options['cursor'])
+            : $this->api->get($user, $path, ['$top' => $top]);
+
+        $bodyFormat = ($options['body_format'] ?? 'text') === 'html' ? 'html' : 'text';
+        $includeSystem = (bool) ($options['include_system'] ?? false);
+
+        $messages = [];
+        foreach ($data['value'] ?? [] as $m) {
+            $type = $m['messageType'] ?? 'message';
+            if (!$includeSystem && $type !== 'message') {
+                continue;
+            }
+            if (!empty($m['deletedDateTime'])) {
+                continue;
+            }
+            $messages[] = $this->mapMessage($m, $bodyFormat);
+        }
+
+        return [
+            'messages' => $messages,
+            'pagination' => new Pagination(
+                page: $pagination?->page ?? 1,
+                perPage: $top,
+                nextLink: $data['@odata.nextLink'] ?? null,
+            ),
+            'next_cursor' => $data['@odata.nextLink'] ?? null,
+        ];
+    }
+
+    protected function mapMessage(array $m, string $bodyFormat): array
+    {
+        $content = (string) ($m['body']['content'] ?? '');
+        $isHtml = strtolower($m['body']['contentType'] ?? 'text') === 'html';
+
+        return array_filter([
+            'id' => $m['id'] ?? '',
+            'reply_to_id' => $m['replyToId'] ?? null,
+            'from' => $m['from']['user']['displayName'] ?? $m['from']['application']['displayName'] ?? ($m['from']['user']['id'] ?? 'unknown'),
+            'from_id' => $m['from']['user']['id'] ?? null,
+            'created_at' => $m['createdDateTime'] ?? null,
+            'edited_at' => $m['lastEditedDateTime'] ?? null,
+            'subject' => $m['subject'] ?? null,
+            'body' => $bodyFormat === 'text' && $isHtml ? self::htmlToText($content) : $content,
+            'body_type' => $bodyFormat === 'text' ? 'text' : ($isHtml ? 'html' : 'text'),
+            'message_type' => ($m['messageType'] ?? 'message') !== 'message' ? $m['messageType'] : null,
+            'importance' => ($m['importance'] ?? 'normal') !== 'normal' ? $m['importance'] : null,
+            'attachments' => array_values(array_filter(array_map(
+                fn ($a) => $a['name'] ?? null ? ['name' => $a['name'], 'url' => $a['contentUrl'] ?? null] : null,
+                $m['attachments'] ?? [],
+            ))) ?: null,
+            'web_url' => $m['webUrl'] ?? null,
+        ], fn ($v) => $v !== null && $v !== '');
+    }
+
+    protected function bodyPayload(string $body, string $contentType): array
+    {
+        $contentType = strtolower(trim($contentType));
+        if ($contentType === 'text') {
+            return ['contentType' => 'text', 'content' => $body];
+        }
+
+        return [
+            'contentType' => 'html',
+            'content' => $contentType === 'html' ? $body : Microsoft365MailConnector::normalizeBody($body),
+        ];
+    }
+
+    protected function quote(array $original, string $comment): string
+    {
+        $from = $original['from']['user']['displayName'] ?? 'unbekannt';
+        $at = $original['createdDateTime'] ?? '';
+
+        return ($comment !== '' ? '<div>' . Microsoft365MailConnector::normalizeBody($comment) . '</div>' : '')
+            . '<blockquote style="border-left:3px solid #888;padding-left:8px;color:#555;">'
+            . '<div><em>Weitergeleitet: ' . htmlspecialchars($from) . ' (' . htmlspecialchars($at) . ')</em></div>'
+            . ($original['body']['content'] ?? '')
+            . '</blockquote>';
+    }
+
+    protected function channelPath(string $teamId, string $channelId): string
+    {
+        return '/teams/' . Microsoft365ApiService::segment($teamId) . '/channels/' . Microsoft365ApiService::segment($channelId);
+    }
+
+    /**
+     * Kombinierte ID "teamId:channelId" → [teamId, channelId]. Team-IDs sind
+     * GUIDs ohne Doppelpunkt, Channel-IDs ("19:…@thread.tacv2") enthalten einen.
      */
     protected function parseChannelId(string $channelId): array
     {
-        $parts = explode(':', $channelId, 2);
+        $parts = explode(':', trim($channelId), 2);
 
-        if (count($parts) !== 2) {
-            throw new \InvalidArgumentException(
-                'Channel-ID muss im Format "teamId:channelId" angegeben werden.'
-            );
+        if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
+            throw new \InvalidArgumentException('channel_id muss im Format "teamId:channelId" angegeben werden (siehe teams.channels.list → id).');
         }
 
         return $parts;

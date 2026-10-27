@@ -2,20 +2,19 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365TeamsConnector;
 
-class ForwardTeamsChannelTool implements ToolContract, ToolMetadataContract
+class ForwardTeamsChannelTool extends Microsoft365Tool
 {
-    public function getName(): string { return 'user-connectors.microsoft365.teams.channel.forward'; }
+    public function getName(): string
+    {
+        return 'user-connectors.microsoft365.teams.channel.forward';
+    }
 
     public function getDescription(): string
     {
-        return 'Leitet eine Teams-Channel-Nachricht in einen (anderen) Channel weiter (quote+send).';
+        return 'Leitet einen Teams-Channel-Beitrag in einen (anderen) Channel weiter (als Zitat), optional mit comment.';
     }
 
     public function getSchema(): array
@@ -23,45 +22,36 @@ class ForwardTeamsChannelTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer'],
-                'source_channel_id' => ['type' => 'string'],
+                'connection_id' => self::connectionProperty(),
+                'source_channel_id' => ['type' => 'string', 'description' => '"teamId:channelId".'],
                 'source_message_id' => ['type' => 'string'],
-                'target_channel_id' => ['type' => 'string'],
+                'target_channel_id' => ['type' => 'string', 'description' => '"teamId:channelId".'],
                 'comment' => ['type' => 'string'],
             ],
             'required' => ['source_channel_id', 'source_message_id', 'target_channel_id'],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function errorPrefix(): string
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
-        try {
-            $connector = app(Microsoft365TeamsConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365TeamsConnector(
-                    app(Microsoft365ApiService::class)->forConnection((int) $arguments['connection_id'])
-                );
-            }
-            $result = $connector->forwardChannelMessage(
-                $context->user,
-                (string) $arguments['source_channel_id'],
-                (string) $arguments['source_message_id'],
-                (string) $arguments['target_channel_id'],
-                (string) ($arguments['comment'] ?? ''),
-            );
-            return ToolResult::success(['message_id' => $result['id'] ?? null, 'status' => 'forwarded']);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Forward fehlgeschlagen: ' . $e->getMessage());
-        }
+        return 'Weiterleiten fehlgeschlagen';
+    }
+
+    protected function handle(array $arguments, ToolContext $context): ToolResult
+    {
+        $result = $this->teams($arguments)->forwardChannelMessage(
+            $context->user,
+            $this->requireString($arguments, 'source_channel_id'),
+            $this->requireString($arguments, 'source_message_id'),
+            $this->requireString($arguments, 'target_channel_id'),
+            (string) ($arguments['comment'] ?? ''),
+        );
+
+        return ToolResult::success(['status' => 'forwarded', 'message_id' => $result['id'] ?? null]);
     }
 
     public function getMetadata(): array
     {
-        return ['category' => 'action', 'tags' => ['microsoft365', 'teams', 'channel', 'forward'],
-            'read_only' => false, 'requires_auth' => true, 'risk_level' => 'write',
-            'confirmation_required' => true, 'cost_class' => 'external_api_free'];
+        return self::writeMetadata(['teams', 'channel', 'forward']);
     }
 }

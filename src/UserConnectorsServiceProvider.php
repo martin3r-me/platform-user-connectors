@@ -175,11 +175,9 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListTeamsChatsTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListTeamsChatMessagesTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ForwardTeamsChatTool());
-            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListJoinedTeamsTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListTeamsChannelsTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListTeamsChannelMessagesTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\SendTeamsChannelMessageTool());
-            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ReplyTeamsChannelThreadTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ForwardTeamsChannelTool());
 
             // Microsoft 365 — Calendar
@@ -190,7 +188,6 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\RespondEventTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\FindAvailabilityTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\RenewSubscriptionsTool());
-            $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListRoomListsTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListRoomsTool());
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: Microsoft 365 Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);

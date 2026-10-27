@@ -2,49 +2,52 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365TeamsConnector;
 
-class ListTeamsChatsTool implements ToolContract, ToolMetadataContract
+class ListTeamsChatsTool extends Microsoft365Tool
 {
-    public function getName(): string { return 'user-connectors.microsoft365.teams.chats.list'; }
+    public function getName(): string
+    {
+        return 'user-connectors.microsoft365.teams.chats.list';
+    }
 
     public function getDescription(): string
     {
-        return 'Listet die jüngsten Teams-Chats des Users (1:1, Gruppe). Liefert id, topic, chatType, members.';
+        return 'Listet die Teams-Chats des Users (1:1, Gruppe, Meeting), zuletzt aktive zuerst, mit Mitgliedern. '
+            . 'search filtert nach Topic oder Mitgliedsname/-mail. Nachrichten lesen: teams.chat.messages.list.';
     }
 
     public function getSchema(): array
     {
-        return ['type' => 'object', 'properties' => ['connection_id' => ['type' => 'integer']]];
+        return [
+            'type' => 'object',
+            'properties' => [
+                'connection_id' => self::connectionProperty(),
+                'search' => ['type' => 'string', 'description' => 'Optional. Teil von Topic, Mitgliedsname oder -mail.'],
+                'limit' => ['type' => 'integer', 'description' => 'Chats pro Seite (1–50). Default 50.'],
+                'cursor' => self::cursorProperty(),
+            ],
+        ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
-        try {
-            $connector = app(Microsoft365TeamsConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365TeamsConnector(
-                    app(Microsoft365ApiService::class)->forConnection((int) $arguments['connection_id'])
-                );
-            }
-            return ToolResult::success($connector->listChats($context->user));
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
-        }
+        $result = $this->teams($arguments)->listChats($context->user, [
+            'search' => $arguments['search'] ?? null,
+            'limit' => $arguments['limit'] ?? 50,
+            'cursor' => $arguments['cursor'] ?? null,
+        ]);
+
+        return ToolResult::success(array_filter([
+            'count' => count($result['chats']),
+            'chats' => $result['chats'],
+            'next_cursor' => $result['next_cursor'],
+        ], fn ($v) => $v !== null));
     }
 
     public function getMetadata(): array
     {
-        return ['category' => 'inspection', 'tags' => ['microsoft365', 'teams', 'chats', 'list', 'channel:teams-chat', 'action:list'],
-            'read_only' => true, 'requires_auth' => true, 'risk_level' => 'read', 'idempotent' => true,
-            'cost_class' => 'external_api_free'];
+        return self::readMetadata(['teams', 'chats', 'list', 'channel:teams-chat', 'action:list'], ['category' => 'inspection']);
     }
 }

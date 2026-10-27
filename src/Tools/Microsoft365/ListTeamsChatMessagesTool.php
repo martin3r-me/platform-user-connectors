@@ -2,21 +2,21 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
 use Platform\UserConnectors\DTOs\Pagination;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365TeamsConnector;
 
-class ListTeamsChatMessagesTool implements ToolContract, ToolMetadataContract
+class ListTeamsChatMessagesTool extends Microsoft365Tool
 {
-    public function getName(): string { return 'user-connectors.microsoft365.teams.chat.messages.list'; }
+    public function getName(): string
+    {
+        return 'user-connectors.microsoft365.teams.chat.messages.list';
+    }
 
     public function getDescription(): string
     {
-        return 'Listet Nachrichten in einem Teams-Chat (1:1 oder Gruppe). Erwartet chat_id.';
+        return 'Liest Nachrichten eines Teams-Chats (neueste zuerst, Body als Klartext). Ältere Nachrichten: next_cursor als cursor übergeben.';
     }
 
     public function getSchema(): array
@@ -24,38 +24,39 @@ class ListTeamsChatMessagesTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer'],
+                'connection_id' => self::connectionProperty(),
                 'chat_id' => ['type' => 'string'],
-                'per_page' => ['type' => 'integer', 'description' => 'Default 25.'],
+                'per_page' => ['type' => 'integer', 'description' => '1–' . Microsoft365TeamsConnector::MAX_MESSAGES_PER_PAGE . '. Default 25.'],
+                'cursor' => self::cursorProperty(),
+                'body_format' => ['type' => 'string', 'enum' => ['text', 'html'], 'description' => 'Default text.'],
+                'include_system' => ['type' => 'boolean', 'description' => 'Default false: System-Events (Mitglied hinzugefügt, Anruf beendet …) ausblenden.'],
             ],
             'required' => ['chat_id'],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
-        try {
-            $connector = app(Microsoft365TeamsConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365TeamsConnector(
-                    app(Microsoft365ApiService::class)->forConnection((int) $arguments['connection_id'])
-                );
-            }
-            $pagination = new Pagination(page: 1, perPage: (int) ($arguments['per_page'] ?? 25));
-            $result = $connector->getChatMessages($context->user, (string) $arguments['chat_id'], $pagination);
-            return ToolResult::success($result);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
-        }
+        $result = $this->teams($arguments)->getChatMessages(
+            $context->user,
+            $this->requireString($arguments, 'chat_id'),
+            new Pagination(perPage: (int) ($arguments['per_page'] ?? 25)),
+            [
+                'cursor' => $arguments['cursor'] ?? null,
+                'body_format' => $arguments['body_format'] ?? 'text',
+                'include_system' => (bool) $this->optionalBool($arguments, 'include_system'),
+            ],
+        );
+
+        return ToolResult::success(array_filter([
+            'count' => count($result['messages']),
+            'messages' => $result['messages'],
+            'next_cursor' => $result['next_cursor'],
+        ], fn ($v) => $v !== null));
     }
 
     public function getMetadata(): array
     {
-        return ['category' => 'inspection', 'tags' => ['microsoft365', 'teams', 'chat', 'messages', 'list'],
-            'read_only' => true, 'requires_auth' => true, 'risk_level' => 'read', 'idempotent' => true,
-            'cost_class' => 'external_api_free'];
+        return self::readMetadata(['teams', 'chat', 'messages', 'list', 'read'], ['category' => 'inspection']);
     }
 }

@@ -2,19 +2,14 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService;
-use Platform\UserConnectors\Services\Microsoft365\Microsoft365MailConnector;
 
 /**
- * Liest den Binary-Inhalt eines Mail-Anhangs (base64) über MS Graph.
- * ListMailTool/getMessage liefern nur Attachment-Metadaten (id/name/size) —
- * dieses Tool ist das Analogon zu integrations.easybill.attachment.content.
+ * Liest den Inhalt eines Mail-Anhangs. mail.list liefert nur Metadaten
+ * (id/name/size) — dies ist das Analogon zu integrations.easybill.attachment.content.
  */
-class GetMailAttachmentContentTool implements ToolContract, ToolMetadataContract
+class GetMailAttachmentContentTool extends Microsoft365Tool
 {
     public function getName(): string
     {
@@ -23,7 +18,8 @@ class GetMailAttachmentContentTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Liest den Inhalt (Base64) eines Anhangs einer Outlook-Mail. Benötigt external_mail_id (MS-Graph Message-ID) und attachment_id.';
+        return 'Liest den Inhalt (Base64) eines Outlook-Mail-Anhangs. external_mail_id + attachment_id stammen aus mail.list. '
+            . 'Excel-Anhänge mit parse_spreadsheet=true direkt als Tabellen (Sheets/Rows) statt Base64.';
     }
 
     public function getSchema(): array
@@ -31,64 +27,39 @@ class GetMailAttachmentContentTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer', 'description' => 'Optionale Connection-ID.'],
-                'external_mail_id' => ['type' => 'string', 'description' => 'MS-Graph Message-ID der Mail (i.d.R. aus user_connector_mail_sessions.external_mail_id).'],
-                'attachment_id' => ['type' => 'string', 'description' => 'MS-Graph Attachment-ID.'],
-                'parse_spreadsheet' => ['type' => 'boolean', 'description' => 'Optional: xlsx/xls-Anhänge serverseitig parsen und statt Base64 strukturierte Sheets/Rows (content_base64 entfällt) zurückgeben.'],
+                'connection_id' => self::connectionProperty(),
+                'external_mail_id' => ['type' => 'string', 'description' => 'Graph-Message-ID der Mail.'],
+                'attachment_id' => ['type' => 'string', 'description' => 'Graph-Attachment-ID (attachments[].id aus mail.list).'],
+                'parse_spreadsheet' => ['type' => 'boolean', 'description' => 'Optional: xlsx/xls serverseitig parsen und strukturierte Sheets/Rows statt Base64 liefern.'],
             ],
             'required' => ['external_mail_id', 'attachment_id'],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
+        $attachment = $this->mail($arguments)->getAttachmentContent(
+            $context->user,
+            $this->requireString($arguments, 'external_mail_id'),
+            $this->requireString($arguments, 'attachment_id'),
+        );
 
-        $externalMailId = trim((string) ($arguments['external_mail_id'] ?? ''));
-        $attachmentId = trim((string) ($arguments['attachment_id'] ?? ''));
-
-        if ($externalMailId === '' || $attachmentId === '') {
-            return ToolResult::error('VALIDATION_ERROR', 'external_mail_id und attachment_id sind erforderlich.');
-        }
-
-        try {
-            $connector = app(Microsoft365MailConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365MailConnector(
-                    app(Microsoft365ApiService::class)->forConnection((int) $arguments['connection_id'])
-                );
+        if ($this->optionalBool($arguments, 'parse_spreadsheet')) {
+            $name = (string) ($attachment['name'] ?? '');
+            if (!preg_match('/\.xlsx?$/i', $name) || empty($attachment['content_base64'])) {
+                throw new \InvalidArgumentException('parse_spreadsheet erfordert einen xlsx/xls-Anhang mit Inhalt.');
             }
-
-            $attachment = $connector->getAttachmentContent($context->user, $externalMailId, $attachmentId);
-
-            if (!empty($arguments['parse_spreadsheet'])) {
-                $name = (string) ($attachment['name'] ?? '');
-                if (!preg_match('/\.xlsx?$/i', $name) || empty($attachment['content_base64'])) {
-                    return ToolResult::error('VALIDATION_ERROR', 'parse_spreadsheet erfordert einen xlsx/xls-Anhang mit Inhalt.');
-                }
-                $parsed = app(\Platform\Core\Services\SpreadsheetParserService::class)
-                    ->parse(base64_decode($attachment['content_base64'], true) ?: '', $name);
-                unset($attachment['content_base64']);
-                $attachment['sheets'] = $parsed['sheets'];
-            }
-
-            return ToolResult::success(['attachment' => $attachment]);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
+            $parsed = app(\Platform\Core\Services\SpreadsheetParserService::class)
+                ->parse(base64_decode($attachment['content_base64'], true) ?: '', $name);
+            unset($attachment['content_base64']);
+            $attachment['sheets'] = $parsed['sheets'];
         }
+
+        return ToolResult::success(['attachment' => $attachment]);
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'query',
-            'tags' => ['microsoft365', 'outlook', 'mail', 'email', 'attachment', 'content'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'safe',
-            'cost_class' => 'external_api_free',
-        ];
+        return self::readMetadata(['outlook', 'mail', 'email', 'attachment', 'content']);
     }
 }

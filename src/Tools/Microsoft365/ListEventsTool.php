@@ -2,15 +2,13 @@
 
 namespace Platform\UserConnectors\Tools\Microsoft365;
 
-use Carbon\Carbon;
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\DTOs\Pagination;
+use Platform\UserConnectors\DTOs\CalendarEvent;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365CalendarConnector;
+use Platform\UserConnectors\Services\Microsoft365\Microsoft365EventTime;
 
-class ListEventsTool implements ToolContract, ToolMetadataContract
+class ListEventsTool extends Microsoft365Tool
 {
     public function getName(): string
     {
@@ -19,7 +17,10 @@ class ListEventsTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Listet Kalender-Events aus dem Outlook-Kalender des Users auf. Zeitraum muss angegeben werden (from/to als ISO-8601).';
+        return 'Listet Termine aus dem Outlook-Kalender im Zeitraum from–to (Serien als Einzeltermine) — oder liest mit event_id einen einzelnen Termin. '
+            . 'Zeiten kommen in der Plattform-Zeitzone (mit Offset). Ganztags-Termine haben zusätzlich start_date/end_date '
+            . '(end_date = letzter Tag, einschließlich) — für sie diese Felder statt start/end lesen. '
+            . 'show_as zeigt frei/belegt (free, tentative, busy, oof, workingElsewhere).';
     }
 
     public function getSchema(): array
@@ -27,61 +28,76 @@ class ListEventsTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer', 'description' => 'Optionale Connection-ID.'],
-                'from' => ['type' => 'string', 'description' => 'Start-Zeitpunkt (ISO-8601). Standard: jetzt.'],
-                'to' => ['type' => 'string', 'description' => 'End-Zeitpunkt (ISO-8601). Standard: +7 Tage.'],
-                'per_page' => ['type' => 'integer', 'description' => 'Einträge pro Seite. Standard: 25.'],
+                'connection_id' => self::connectionProperty(),
+                'event_id' => ['type' => 'string', 'description' => 'Optional. Einzelnen Termin per ID lesen (inkl. Beschreibung als Text).'],
+                'from' => ['type' => 'string', 'description' => 'Beginn des Zeitraums (2026-11-03 oder ISO-8601). Default: heute 00:00.'],
+                'to' => ['type' => 'string', 'description' => 'Ende des Zeitraums. Reines Datum = einschließlich dieses Tages. Default: from + 7 Tage.'],
+                'timezone' => self::timezoneProperty(),
+                'body_format' => ['type' => 'string', 'enum' => ['none', 'preview', 'text', 'html'], 'description' => 'Beschreibung der Termine. Default: none in Listen, text bei event_id.'],
+                'limit' => ['type' => 'integer', 'description' => 'Max. Termine (1–' . Microsoft365CalendarConnector::MAX_LIST_LIMIT . '). Default 100. Mehr vorhanden → truncated=true.'],
+                'per_page' => ['type' => 'integer', 'description' => 'Alias für limit.'],
+                'include_cancelled' => ['type' => 'boolean', 'description' => 'Default false: abgesagte Termine ausblenden.'],
             ],
             'required' => [],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
+        $tz = Microsoft365EventTime::resolveTimezone($arguments['timezone'] ?? null);
+        $connector = $this->calendar($arguments);
 
-        try {
-            $connector = app(Microsoft365CalendarConnector::class);
-            if (!empty($arguments['connection_id'])) {
-                $connector = new Microsoft365CalendarConnector(
-                    app(\Platform\UserConnectors\Services\Microsoft365\Microsoft365ApiService::class)
-                        ->forConnection($arguments['connection_id'])
-                );
-            }
-
-            $from = !empty($arguments['from']) ? Carbon::parse($arguments['from']) : now();
-            $to = !empty($arguments['to']) ? Carbon::parse($arguments['to']) : now()->addDays(7);
-
-            $pagination = new Pagination(
-                perPage: $arguments['per_page'] ?? 25,
-            );
-
-            $result = $connector->listEvents($context->user, $from, $to, $pagination);
-
-            return ToolResult::success([
-                'events' => array_map(fn ($e) => $e->toArray(), $result['events']),
-                'pagination' => $result['pagination']->toArray(),
-                'filters' => [
-                    'from' => $from->toIso8601String(),
-                    'to' => $to->toIso8601String(),
-                ],
+        if (!empty($arguments['event_id'])) {
+            $event = $connector->getEvent($context->user, trim((string) $arguments['event_id']), [
+                'timezone' => $tz,
+                'body_format' => $arguments['body_format'] ?? 'text',
             ]);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
+
+            return ToolResult::success(['event' => $event->toArray(), 'timezone' => $tz]);
         }
+
+        $from = !empty($arguments['from'])
+            ? Microsoft365EventTime::parse((string) $arguments['from'], $tz)
+            : now($tz)->startOfDay();
+        if (!empty($arguments['to'])) {
+            $to = Microsoft365EventTime::parse((string) $arguments['to'], $tz);
+            if (Microsoft365EventTime::isDateOnly((string) $arguments['to'])) {
+                $to = $to->copy()->addDay();
+            }
+        } else {
+            $to = $from->copy()->addDays(7);
+        }
+        if ($to->lte($from)) {
+            throw new \InvalidArgumentException('to muss nach from liegen.');
+        }
+
+        $result = $connector->listEvents($context->user, $from, $to, null, [
+            'timezone' => $tz,
+            'body_format' => $arguments['body_format'] ?? 'none',
+            'limit' => (int) ($arguments['limit'] ?? $arguments['per_page'] ?? 100),
+        ]);
+
+        $events = $result['events'];
+        if (!$this->optionalBool($arguments, 'include_cancelled')) {
+            $events = array_values(array_filter($events, fn (CalendarEvent $e) => !$e->isCancelled));
+        }
+
+        return ToolResult::success([
+            'count' => count($events),
+            'events' => array_map(fn (CalendarEvent $e) => $e->toArray(), $events),
+            'truncated' => $result['truncated'],
+            'range' => ['from' => $from->toIso8601String(), 'to' => $to->toIso8601String(), 'timezone' => $tz],
+        ]);
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'query',
-            'tags' => ['microsoft365', 'outlook', 'calendar', 'events', 'list'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'safe',
-            'cost_class' => 'external_api_free',
-        ];
+        return self::readMetadata(['outlook', 'calendar', 'events', 'termine', 'list', 'read'], [
+            'examples' => [
+                'Diese Woche: {"from": "2026-11-02", "to": "2026-11-08"}',
+                'Einzelner Termin: {"event_id": "AAMk…"}',
+            ],
+            'related_tools' => ['user-connectors.microsoft365.calendar.create', 'user-connectors.microsoft365.calendar.update', 'user-connectors.microsoft365.calendar.find_availability'],
+        ]);
     }
 }

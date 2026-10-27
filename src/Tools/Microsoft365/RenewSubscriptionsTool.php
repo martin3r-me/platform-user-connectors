@@ -7,6 +7,7 @@ use Platform\Core\Contracts\ToolContext;
 use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
 use Platform\UserConnectors\Models\UserConnectorConnection;
+use Platform\UserConnectors\Services\ConnectionResolver;
 use Platform\UserConnectors\Services\Microsoft365\Microsoft365SubscriptionService;
 
 /**
@@ -55,8 +56,9 @@ class RenewSubscriptionsTool implements ToolContract, ToolMetadataContract
         }
 
         $connectionId = $arguments['connection_id'] ?? null;
+        // Nur eigene/geteilte Connections — sonst könnte jeder fremde Subscriptions umbiegen.
         $connection = $connectionId
-            ? UserConnectorConnection::find($connectionId)
+            ? app(ConnectionResolver::class)->resolveById((int) $connectionId, $context->user)
             : UserConnectorConnection::query()
                 ->where('owner_user_id', $context->user->id)
                 ->whereHas('connector', fn ($q) => $q->where('key', 'microsoft365'))
@@ -64,8 +66,8 @@ class RenewSubscriptionsTool implements ToolContract, ToolMetadataContract
                 ->orderByDesc('id')
                 ->first();
 
-        if (!$connection) {
-            return ToolResult::error('NOT_FOUND', 'Keine passende microsoft365-Connection gefunden.');
+        if (!$connection || $connection->connector?->key !== 'microsoft365') {
+            return ToolResult::error('Keine passende (zugängliche) microsoft365-Connection gefunden.', 'NOT_FOUND');
         }
 
         $service = app(Microsoft365SubscriptionService::class);
