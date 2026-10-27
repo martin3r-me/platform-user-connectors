@@ -37,6 +37,7 @@ class ListEventsTool extends Microsoft365Tool
                 'limit' => ['type' => 'integer', 'description' => 'Max. Termine (1–' . Microsoft365CalendarConnector::MAX_LIST_LIMIT . '). Default 100. Mehr vorhanden → truncated=true.'],
                 'per_page' => ['type' => 'integer', 'description' => 'Alias für limit.'],
                 'include_cancelled' => ['type' => 'boolean', 'description' => 'Default false: abgesagte Termine ausblenden.'],
+                'include_attendees' => ['type' => 'boolean', 'description' => 'Default false: in Listen nur attendee_count (Teilnehmerlisten machen sonst den Großteil der Antwort aus). Bei event_id immer vollständig.'],
             ],
             'required' => [],
         ];
@@ -82,9 +83,20 @@ class ListEventsTool extends Microsoft365Tool
             $events = array_values(array_filter($events, fn (CalendarEvent $e) => !$e->isCancelled));
         }
 
+        $withAttendees = (bool) $this->optionalBool($arguments, 'include_attendees');
+
         return ToolResult::success([
             'count' => count($events),
-            'events' => array_map(fn (CalendarEvent $e) => $e->toArray(), $events),
+            'events' => array_map(function (CalendarEvent $e) use ($withAttendees) {
+                $data = $e->toArray();
+                unset($data['provider']);
+                if (!$withAttendees && isset($data['attendees'])) {
+                    $data['attendee_count'] = count($data['attendees']);
+                    unset($data['attendees']);
+                }
+
+                return $data;
+            }, $events),
             'truncated' => $result['truncated'],
             'range' => ['from' => $from->toIso8601String(), 'to' => $to->toIso8601String(), 'timezone' => $tz],
         ]);

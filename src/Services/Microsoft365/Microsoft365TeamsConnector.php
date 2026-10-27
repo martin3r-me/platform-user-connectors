@@ -5,6 +5,7 @@ namespace Platform\UserConnectors\Services\Microsoft365;
 use Platform\Core\Models\User;
 use Platform\UserConnectors\Contracts\PresenceConnector;
 use Platform\UserConnectors\DTOs\Pagination;
+use Platform\UserConnectors\Exceptions\Microsoft365ApiException;
 
 class Microsoft365TeamsConnector implements PresenceConnector
 {
@@ -106,46 +107,74 @@ class Microsoft365TeamsConnector implements PresenceConnector
     }
 
     /**
-     * Chats, neueste zuerst. Graph sortiert /me/chats nicht nach Aktivität —
-     * daher clientseitig. Options: limit (Default 50), search (Topic/Mitglied), cursor.
+     * Chats, zuletzt aktive zuerst. /me/chats ist ohne $orderby unsortiert —
+     * die erste Seite enthält dann beliebige (oft alte) Chats. Sortiert wird
+     * serverseitig nach lastMessagePreview; die Varianten fallen zurück, falls
+     * Graph eine Kombination ablehnt. Options: limit, search, cursor.
      */
     public function listChats(User $user, array $options = []): array
     {
         $limit = max(1, min(50, (int) ($options['limit'] ?? 50)));
+        $data = null;
 
-        $data = !empty($options['cursor'])
-            ? $this->api->getNextPage($user, (string) $options['cursor'])
-            : $this->api->get($user, '/me/chats', [
-                '$top' => $limit,
-                '$select' => 'id,topic,chatType,lastUpdatedDateTime,webUrl',
-                '$expand' => 'members',
-            ]);
+        if (!empty($options['cursor'])) {
+            $data = $this->api->getNextPage($user, (string) $options['cursor']);
+        } else {
+            $attempts = [
+                ['$expand' => 'members,lastMessagePreview', '$orderby' => 'lastMessagePreview/createdDateTime desc'],
+                ['$expand' => 'lastMessagePreview', '$orderby' => 'lastMessagePreview/createdDateTime desc'],
+                ['$expand' => 'members'],
+            ];
+            foreach ($attempts as $i => $variant) {
+                try {
+                    $data = $this->api->get($user, '/me/chats', [
+                        '$top' => $limit,
+                        '$select' => 'id,topic,chatType,lastUpdatedDateTime,webUrl',
+                    ] + $variant);
+                    break;
+                } catch (Microsoft365ApiException $e) {
+                    if ($e->getCode() !== 400 || $i === array_key_last($attempts)) {
+                        throw $e;
+                    }
+                }
+            }
+        }
 
-        $chats = array_map(fn (array $c) => [
-            'id' => $c['id'] ?? '',
-            'topic' => $c['topic'] ?? null,
-            'chat_type' => $c['chatType'] ?? 'oneOnOne',
-            'last_updated' => $c['lastUpdatedDateTime'] ?? null,
-            'members' => array_map(fn (array $m) => [
-                'name' => $m['displayName'] ?? null,
-                'email' => $m['email'] ?? null,
-                'user_id' => $m['userId'] ?? null,
-            ], $c['members'] ?? []),
-        ], $data['value'] ?? []);
+        $chats = array_map(function (array $c) {
+            $last = $c['lastMessagePreview'] ?? null;
+
+            return array_filter([
+                'id' => $c['id'] ?? '',
+                'topic' => $c['topic'] ?? null,
+                'chat_type' => $c['chatType'] ?? 'oneOnOne',
+                'last_updated' => $c['lastUpdatedDateTime'] ?? null,
+                'last_message' => $last ? array_filter([
+                    'at' => $last['createdDateTime'] ?? null,
+                    'from' => $last['from']['user']['displayName'] ?? null,
+                    'preview' => mb_substr(self::htmlToText((string) ($last['body']['content'] ?? '')), 0, 200),
+                ], fn ($v) => $v !== null && $v !== '') : null,
+                'members' => isset($c['members']) ? array_map(fn (array $m) => [
+                    'name' => $m['displayName'] ?? null,
+                    'email' => $m['email'] ?? null,
+                    'user_id' => $m['userId'] ?? null,
+                ], $c['members']) : null,
+            ], fn ($v) => $v !== null);
+        }, $data['value'] ?? []);
 
         $search = mb_strtolower(trim((string) ($options['search'] ?? '')));
         if ($search !== '') {
             $chats = array_values(array_filter($chats, function (array $c) use ($search) {
-                $haystack = mb_strtolower(($c['topic'] ?? '') . ' ' . implode(' ', array_map(
+                $haystack = mb_strtolower(($c['topic'] ?? '') . ' ' . ($c['last_message']['from'] ?? '') . ' ' . implode(' ', array_map(
                     fn ($m) => ($m['name'] ?? '') . ' ' . ($m['email'] ?? ''),
-                    $c['members'],
+                    $c['members'] ?? [],
                 )));
 
                 return str_contains($haystack, $search);
             }));
         }
 
-        usort($chats, fn ($a, $b) => strcmp($b['last_updated'] ?? '', $a['last_updated'] ?? ''));
+        $activity = fn (array $c) => $c['last_message']['at'] ?? $c['last_updated'] ?? '';
+        usort($chats, fn ($a, $b) => strcmp($activity($b), $activity($a)));
 
         return ['chats' => $chats, 'next_cursor' => $data['@odata.nextLink'] ?? null];
     }

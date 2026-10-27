@@ -14,7 +14,7 @@ class ListTeamsChatsTool extends Microsoft365Tool
 
     public function getDescription(): string
     {
-        return 'Listet die Teams-Chats des Users (1:1, Gruppe, Meeting), zuletzt aktive zuerst, mit Mitgliedern. '
+        return 'Listet die Teams-Chats des Users (1:1, Gruppe, Meeting), zuletzt aktive zuerst, mit Mitgliedern und Vorschau der letzten Nachricht. '
             . 'search filtert nach Topic oder Mitgliedsname/-mail. Nachrichten lesen: teams.chat.messages.list.';
     }
 
