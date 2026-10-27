@@ -2,6 +2,7 @@
 
 namespace Platform\UserConnectors\Services\Microsoft365;
 
+use Illuminate\Support\Facades\Log;
 use Platform\Core\Models\User;
 use Platform\UserConnectors\Contracts\PresenceConnector;
 use Platform\UserConnectors\DTOs\Pagination;
@@ -116,27 +117,35 @@ class Microsoft365TeamsConnector implements PresenceConnector
     {
         $limit = max(1, min(50, (int) ($options['limit'] ?? 50)));
         $data = null;
+        $sortError = null;
 
         if (!empty($options['cursor'])) {
             $data = $this->api->getNextPage($user, (string) $options['cursor']);
         } else {
+            $select = ['$select' => 'id,topic,chatType,lastUpdatedDateTime,webUrl'];
+            $ordered = ['$orderby' => 'lastMessagePreview/createdDateTime desc'];
             $attempts = [
-                ['$expand' => 'members,lastMessagePreview', '$orderby' => 'lastMessagePreview/createdDateTime desc'],
-                ['$expand' => 'lastMessagePreview', '$orderby' => 'lastMessagePreview/createdDateTime desc'],
-                ['$expand' => 'members'],
+                $select + ['$expand' => 'members,lastMessagePreview'] + $ordered,
+                ['$expand' => 'members,lastMessagePreview'] + $ordered,
+                ['$expand' => 'lastMessagePreview'] + $ordered,
+                // Letzter Ausweg: unsortiert (Graph-Reihenfolge), nur Seite sortiert.
+                $select + ['$expand' => 'members'],
             ];
             foreach ($attempts as $i => $variant) {
                 try {
-                    $data = $this->api->get($user, '/me/chats', [
-                        '$top' => $limit,
-                        '$select' => 'id,topic,chatType,lastUpdatedDateTime,webUrl',
-                    ] + $variant);
+                    $data = $this->api->get($user, '/me/chats', ['$top' => $limit] + $variant);
                     break;
                 } catch (Microsoft365ApiException $e) {
                     if ($e->getCode() !== 400 || $i === array_key_last($attempts)) {
                         throw $e;
                     }
+                    $sortError ??= $e->getMessage();
                 }
+            }
+            if (!isset($variant['$orderby'])) {
+                Log::warning('Microsoft365: /me/chats ohne Sortierung abgerufen', ['error' => $sortError]);
+            } else {
+                $sortError = null;
             }
         }
 
@@ -176,7 +185,13 @@ class Microsoft365TeamsConnector implements PresenceConnector
         $activity = fn (array $c) => $c['last_message']['at'] ?? $c['last_updated'] ?? '';
         usort($chats, fn ($a, $b) => strcmp($activity($b), $activity($a)));
 
-        return ['chats' => $chats, 'next_cursor' => $data['@odata.nextLink'] ?? null];
+        $result = ['chats' => $chats, 'next_cursor' => $data['@odata.nextLink'] ?? null];
+        if ($sortError) {
+            // Sichtbar machen statt still falsch sortieren.
+            $result['sort_warning'] = 'Graph lehnte die Sortierung nach letzter Aktivität ab — Reihenfolge nur innerhalb dieser Seite. (' . $sortError . ')';
+        }
+
+        return $result;
     }
 
     /**

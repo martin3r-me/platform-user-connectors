@@ -43,6 +43,7 @@ class ListTeamsChatsTool extends Microsoft365Tool
             'count' => count($result['chats']),
             'chats' => $result['chats'],
             'next_cursor' => $result['next_cursor'],
+            'sort_warning' => $result['sort_warning'] ?? null,
         ], fn ($v) => $v !== null));
     }
 
