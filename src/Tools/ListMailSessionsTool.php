@@ -2,15 +2,14 @@
 
 namespace Platform\UserConnectors\Tools;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorMailSession;
 
-class ListMailSessionsTool implements ToolContract, ToolMetadataContract
+class ListMailSessionsTool extends ConnectorTool
 {
+    private const DATE = 'COALESCE(user_connector_mail_sessions.received_at, user_connector_mail_sessions.sent_at)';
+
     public function getName(): string
     {
         return 'user-connectors.mail-sessions.list';
@@ -18,244 +17,147 @@ class ListMailSessionsTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Listet E-Mails des Users auf, standardmäßig nach Threads gruppiert (wie Gmail/Outlook). Pro Thread wird die neueste Mail mit message_count, unread_count und last_activity_at angezeigt. Threads mit neuer Aktivität stehen oben. Mit group_by_thread=false werden einzelne Mails aufgelistet. Unterstützt Volltextsuche (search) sowie Absender- und Zeitraum-Filter über die lokal gespeicherten Mails.';
+        return 'Durchsucht die LOKAL gespeicherte Mail-Historie (per Webhook synchronisiert) — standardmäßig nach Threads gruppiert '
+            . '(neueste Mail je Thread mit message_count/unread_count, ungelesene zuerst). Schnell, auch über geteilte Postfächer, '
+            . 'mit conversation_id alle Mails eines Threads. Für den aktuellen Live-Stand oder vollen Mail-Text: '
+            . 'user-connectors.microsoft365.mail.list.';
     }
 
     public function getSchema(): array
     {
         return [
             'type' => 'object',
-            'properties' => [
-                'connector_key' => ['type' => 'string', 'description' => 'Filter nach Connector: microsoft365.'],
-                'status' => ['type' => 'string', 'description' => 'Filter nach Status: new, read.'],
-                'direction' => ['type' => 'string', 'description' => 'Filter nach Richtung: inbound, outbound.'],
-                'search' => ['type' => 'string', 'description' => 'Volltextsuche (LIKE) über Betreff, Body/Preview und Absender (Adresse + Name) in der lokalen DB.'],
-                'from' => ['type' => 'string', 'description' => 'Filter (LIKE) auf Absender-Adresse oder -Name.'],
-                'date_from' => ['type' => 'string', 'description' => 'Filter: nur Mails ab diesem Zeitpunkt (received_at bzw. sent_at).'],
-                'date_to' => ['type' => 'string', 'description' => 'Filter: nur Mails bis zu diesem Zeitpunkt (received_at bzw. sent_at).'],
-                'is_read' => ['type' => 'boolean', 'description' => 'Filter nach Lese-Status. Bei Threads: true = alle gelesen, false = mindestens eine ungelesen.'],
-                'group_by_thread' => ['type' => 'boolean', 'description' => 'Thread-Gruppierung aktivieren. Standard: true. Bei false werden einzelne Mails aufgelistet.'],
-                'limit' => ['type' => 'integer', 'description' => 'Anzahl Ergebnisse. Standard: 25, Max: 100.'],
+            'properties' => self::listProperties(['microsoft365'], 'Empfangen/gesendet') + [
+                'search' => ['type' => 'string', 'description' => 'Volltext über Betreff, Text und Absender.'],
+                'from' => ['type' => 'string', 'description' => 'Teil von Absender-Adresse oder -Name.'],
+                'conversation_id' => ['type' => 'string', 'description' => 'Alle Mails dieses Threads (setzt group_by_thread=false).'],
+                'direction' => ['type' => 'string', 'enum' => ['inbound', 'outbound']],
+                'status' => ['type' => 'string', 'description' => 'new, read …'],
+                'is_read' => ['type' => 'boolean', 'description' => 'Bei Threads: false = mind. eine ungelesen, true = alle gelesen.'],
+                'has_attachments' => ['type' => 'boolean'],
+                'group_by_thread' => ['type' => 'boolean', 'description' => 'Default true.'],
             ],
-            'required' => [],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
+        $connectionIds = $this->scopedConnectionIds($context->user, $arguments, ['microsoft365']);
+        if ($connectionIds === []) {
+            return ToolResult::success(['mail_sessions' => [], 'count' => 0, 'total' => 0]);
         }
 
-        try {
-            $connectionIds = UserConnectorConnection::query()
-                ->where('owner_user_id', $context->user->id)
-                ->pluck('id')
-                ->all();
+        $grouped = ($this->optionalBool($arguments, 'group_by_thread') ?? true) && empty($arguments['conversation_id']);
 
-            if (empty($connectionIds)) {
-                return ToolResult::success(['mail_sessions' => [], 'total' => 0]);
-            }
-
-            $limit = min($arguments['limit'] ?? 25, 100);
-            $groupByThread = $arguments['group_by_thread'] ?? true;
-
-            if ($groupByThread) {
-                return $this->executeGrouped($arguments, $connectionIds, $limit);
-            }
-
-            return $this->executeFlat($arguments, $connectionIds, $limit);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
-        }
+        return ToolResult::success($grouped
+            ? $this->grouped($arguments, $connectionIds)
+            : $this->flat($arguments, $connectionIds));
     }
 
-    private function executeGrouped(array $arguments, array $connectionIds, int $limit): ToolResult
+    private function grouped(array $arguments, array $connectionIds): array
     {
-        // Subquery: latest mail ID + aggregates per conversation_id
-        $threadSubquery = UserConnectorMailSession::query()
+        $threads = UserConnectorMailSession::query()
             ->selectRaw('
                 COALESCE(conversation_id, external_mail_id) as thread_key,
                 MAX(id) as latest_mail_id,
-                MAX(COALESCE(received_at, sent_at)) as last_activity_at,
+                MAX(' . self::DATE . ') as last_activity_at,
                 COUNT(*) as message_count,
-                SUM(CASE WHEN is_read = false THEN 1 ELSE 0 END) as unread_count,
-                MAX(CASE WHEN has_attachments = true THEN 1 ELSE 0 END) as thread_has_attachments
+                SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) as unread_count,
+                MAX(CASE WHEN has_attachments = 1 THEN 1 ELSE 0 END) as thread_has_attachments
             ')
             ->whereIn('connection_id', $connectionIds);
+        $this->applyFilters($threads, $arguments, false);
+        $threads->groupBy('thread_key');
 
-        // Apply filters to the subquery so aggregates are correct
-        $this->applyFilters($threadSubquery, $arguments, 'thread');
-
-        $threadSubquery->groupBy('thread_key');
-
-        // Join with full MailSession for the fields of the latest mail
         $query = UserConnectorMailSession::query()
-            ->joinSub($threadSubquery, 'threads', fn ($join) =>
-                $join->on('user_connector_mail_sessions.id', '=', 'threads.latest_mail_id')
-            )
+            ->joinSub($threads, 'threads', fn ($join) => $join->on('user_connector_mail_sessions.id', '=', 'threads.latest_mail_id'))
             ->select('user_connector_mail_sessions.*')
-            ->addSelect(
-                'threads.message_count',
-                'threads.unread_count',
-                'threads.last_activity_at',
-                'threads.thread_has_attachments'
-            )
+            ->addSelect('threads.message_count', 'threads.unread_count', 'threads.last_activity_at', 'threads.thread_has_attachments')
             ->orderByRaw('CASE WHEN threads.unread_count > 0 THEN 0 ELSE 1 END')
             ->orderByDesc('threads.last_activity_at');
 
-        // is_read filter in thread mode: filter by thread-level unread_count
-        if (isset($arguments['is_read'])) {
-            if ((bool) $arguments['is_read']) {
-                $query->where('threads.unread_count', '=', 0);
-            } else {
-                $query->where('threads.unread_count', '>', 0);
+        $isRead = $this->optionalBool($arguments, 'is_read');
+        if ($isRead !== null) {
+            $query->where('threads.unread_count', $isRead ? '=' : '>', 0);
+        }
+
+        return $this->paginate($query, $arguments, 'mail_sessions', fn (UserConnectorMailSession $s) => $this->present($s) + [
+            'is_read' => (int) $s->unread_count === 0,
+            'has_attachments' => (bool) $s->thread_has_attachments,
+            'message_count' => (int) $s->message_count,
+            'unread_count' => (int) $s->unread_count,
+            'last_activity_at' => $s->last_activity_at,
+        ]);
+    }
+
+    private function flat(array $arguments, array $connectionIds): array
+    {
+        $query = UserConnectorMailSession::query()->whereIn('connection_id', $connectionIds);
+        $this->applyFilters($query, $arguments, true);
+        $query->orderByRaw(self::DATE . (empty($arguments['conversation_id']) ? ' DESC' : ' ASC'));
+
+        return $this->paginate($query, $arguments, 'mail_sessions', fn (UserConnectorMailSession $s) => $this->present($s) + [
+            'is_read' => (bool) $s->is_read,
+            'has_attachments' => (bool) $s->has_attachments,
+        ]);
+    }
+
+    private function applyFilters($query, array $arguments, bool $flat): void
+    {
+        foreach (['status', 'direction', 'conversation_id'] as $column) {
+            if (!empty($arguments[$column])) {
+                $query->where($column, (string) $arguments[$column]);
             }
         }
-
-        $sessions = $query->limit($limit)->get();
-
-        $result = $sessions->map(function (UserConnectorMailSession $session) {
-            return [
-                'id' => $session->id,
-                'connection_id' => $session->connection_id,
-                'connector_key' => $session->connector_key,
-                'external_mail_id' => $session->external_mail_id,
-                'conversation_id' => $session->conversation_id,
-                'direction' => $session->direction,
-                'status' => $session->status,
-                'from_address' => $session->from_address,
-                'from_name' => $session->from_name,
-                'to_addresses' => $session->to_addresses,
-                'cc_addresses' => $session->cc_addresses,
-                'subject' => $session->subject,
-                'body_preview' => $session->body_preview,
-                'is_read' => (int) $session->unread_count === 0,
-                'has_attachments' => (bool) $session->thread_has_attachments,
-                'is_draft' => $session->is_draft,
-                'shared_mailbox' => $session->shared_mailbox,
-                'received_at' => $session->received_at?->toIso8601String(),
-                'sent_at' => $session->sent_at?->toIso8601String(),
-                'message_count' => (int) $session->message_count,
-                'unread_count' => (int) $session->unread_count,
-                'last_activity_at' => $session->last_activity_at,
-                'meta' => $session->meta ?? [],
-            ];
-        })->all();
-
-        return ToolResult::success([
-            'mail_sessions' => $result,
-            'total' => count($result),
-        ]);
-    }
-
-    private function executeFlat(array $arguments, array $connectionIds, int $limit): ToolResult
-    {
-        $query = UserConnectorMailSession::query()
-            ->whereIn('connection_id', $connectionIds)
-            ->orderByRaw('CASE WHEN is_read = false THEN 0 ELSE 1 END')
-            ->orderByDesc('received_at');
-
-        $this->applyFilters($query, $arguments);
-
-        $sessions = $query->limit($limit)->get();
-
-        $result = $sessions->map(function (UserConnectorMailSession $session) {
-            return [
-                'id' => $session->id,
-                'connection_id' => $session->connection_id,
-                'connector_key' => $session->connector_key,
-                'external_mail_id' => $session->external_mail_id,
-                'conversation_id' => $session->conversation_id,
-                'direction' => $session->direction,
-                'status' => $session->status,
-                'from_address' => $session->from_address,
-                'from_name' => $session->from_name,
-                'to_addresses' => $session->to_addresses,
-                'cc_addresses' => $session->cc_addresses,
-                'subject' => $session->subject,
-                'body_preview' => $session->body_preview,
-                'is_read' => $session->is_read,
-                'has_attachments' => $session->has_attachments,
-                'is_draft' => $session->is_draft,
-                'shared_mailbox' => $session->shared_mailbox,
-                'received_at' => $session->received_at?->toIso8601String(),
-                'sent_at' => $session->sent_at?->toIso8601String(),
-                'meta' => $session->meta ?? [],
-            ];
-        })->all();
-
-        return ToolResult::success([
-            'mail_sessions' => $result,
-            'total' => count($result),
-        ]);
-    }
-
-    private function applyFilters($query, array $arguments, string $mode = 'flat'): void
-    {
-        if (!empty($arguments['connector_key'])) {
-            $query->where('connector_key', $arguments['connector_key']);
-        }
-
-        if (!empty($arguments['status'])) {
-            $query->where('status', $arguments['status']);
-        }
-
-        if (!empty($arguments['direction'])) {
-            $query->where('direction', $arguments['direction']);
-        }
-
         if (!empty($arguments['search'])) {
-            $needle = $arguments['search'];
-            $query->where(function ($q) use ($needle) {
-                $q->where('subject', 'like', "%{$needle}%")
-                    ->orWhere('body_preview', 'like', "%{$needle}%")
-                    ->orWhere('body', 'like', "%{$needle}%")
-                    ->orWhere('from_address', 'like', "%{$needle}%")
-                    ->orWhere('from_name', 'like', "%{$needle}%");
-            });
+            $this->whereLike($query, ['subject', 'body_preview', 'body', 'from_address', 'from_name'], (string) $arguments['search']);
         }
-
         if (!empty($arguments['from'])) {
-            $from = $arguments['from'];
-            $query->where(function ($q) use ($from) {
-                $q->where('from_address', 'like', "%{$from}%")
-                    ->orWhere('from_name', 'like', "%{$from}%");
-            });
+            $this->whereLike($query, ['from_address', 'from_name'], (string) $arguments['from']);
         }
 
-        if (!empty($arguments['date_from'])) {
-            $dateFrom = $arguments['date_from'];
-            $query->where(function ($q) use ($dateFrom) {
-                $q->where('received_at', '>=', $dateFrom)
-                    ->orWhere('sent_at', '>=', $dateFrom);
-            });
+        [$from, $to] = $this->dateRange($arguments);
+        if ($from) {
+            $query->whereRaw(self::DATE . ' >= ?', [$from->format('Y-m-d H:i:s')]);
+        }
+        if ($to) {
+            $query->whereRaw(self::DATE . ' <= ?', [$to->format('Y-m-d H:i:s')]);
         }
 
-        if (!empty($arguments['date_to'])) {
-            $dateTo = $arguments['date_to'];
-            $query->where(function ($q) use ($dateTo) {
-                $q->where('received_at', '<=', $dateTo)
-                    ->orWhere('sent_at', '<=', $dateTo);
-            });
+        $hasAttachments = $this->optionalBool($arguments, 'has_attachments');
+        if ($hasAttachments !== null) {
+            $query->where('has_attachments', $hasAttachments);
         }
+        $isRead = $this->optionalBool($arguments, 'is_read');
+        if ($flat && $isRead !== null) {
+            $query->where('is_read', $isRead);
+        }
+    }
 
-        // is_read filter: in thread mode, skip here (handled via HAVING or post-filter)
-        // in flat mode, apply directly
-        if (isset($arguments['is_read']) && $mode === 'flat') {
-            $query->where('is_read', (bool) $arguments['is_read']);
-        }
+    private function present(UserConnectorMailSession $s): array
+    {
+        return array_filter([
+            'id' => $s->id,
+            'connection_id' => $s->connection_id,
+            'external_mail_id' => $s->external_mail_id,
+            'conversation_id' => $s->conversation_id,
+            'direction' => $s->direction,
+            'status' => $s->status,
+            'from_address' => $s->from_address,
+            'from_name' => $s->from_name,
+            'to_addresses' => $s->to_addresses,
+            'cc_addresses' => $s->cc_addresses,
+            'subject' => $s->subject,
+            'body_preview' => $s->body_preview,
+            'is_draft' => $s->is_draft ?: null,
+            'shared_mailbox' => $s->shared_mailbox,
+            'received_at' => $s->received_at?->toIso8601String(),
+            'sent_at' => $s->sent_at?->toIso8601String(),
+        ], fn ($v) => $v !== null && $v !== '' && $v !== []);
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'query',
-            'tags' => ['user-connectors', 'mail-sessions', 'email', 'microsoft365', 'search'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'safe',
-            'cost_class' => 'database',
-        ];
+        return self::readMetadata(['mail-sessions', 'email', 'mail', 'threads', 'microsoft365', 'search', 'history']);
     }
 }

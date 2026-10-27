@@ -2,15 +2,14 @@
 
 namespace Platform\UserConnectors\Tools;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
 use Platform\UserConnectors\Models\UserConnectorCallSession;
-use Platform\UserConnectors\Models\UserConnectorConnection;
 
-class ListCallSessionsTool implements ToolContract, ToolMetadataContract
+class ListCallSessionsTool extends ConnectorTool
 {
+    private const KEYS = ['sipgate', 'ringcentral', 'vodafone', 'microsoft365'];
+
     public function getName(): string
     {
         return 'user-connectors.call-sessions.list';
@@ -18,104 +17,69 @@ class ListCallSessionsTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Listet Call Sessions (Telefonate) des Users auf. Zeigt Richtung, Von/An-Nummern, Status, Dauer und Meta-Daten. Filterbar nach Connector, Status, Richtung und Zeitraum.';
+        return 'Lokal gespeicherte Telefonate (Sipgate, RingCentral, Vodafone, Teams) — laufende zuerst, dann neueste. '
+            . 'Richtung, Nummern, Status (ringing, active, completed, missed, failed), Dauer. Filter u. a. Zeitraum und Nummer.';
     }
 
     public function getSchema(): array
     {
         return [
             'type' => 'object',
-            'properties' => [
-                'connector_key' => ['type' => 'string', 'description' => 'Filter nach Connector: microsoft365, sipgate, ringcentral, vodafone.'],
-                'status' => ['type' => 'string', 'description' => 'Filter nach Status: ringing, active, completed, missed, failed.'],
-                'direction' => ['type' => 'string', 'description' => 'Filter nach Richtung: inbound, outbound.'],
-                'connection_id' => ['type' => 'integer', 'description' => 'Filter nach Connection-ID.'],
-                'limit' => ['type' => 'integer', 'description' => 'Anzahl Ergebnisse. Standard: 25, Max: 100.'],
+            'properties' => self::listProperties(self::KEYS, 'Anrufbeginn') + [
+                'status' => ['type' => 'string', 'enum' => ['ringing', 'active', 'completed', 'missed', 'failed']],
+                'direction' => ['type' => 'string', 'enum' => ['inbound', 'outbound']],
+                'phonenumber' => ['type' => 'string', 'description' => 'Teil einer beteiligten Nummer (von/an).'],
             ],
-            'required' => [],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
+        $connectionIds = $this->scopedConnectionIds($context->user, $arguments, self::KEYS);
+
+        $query = UserConnectorCallSession::query()
+            ->whereIn('connection_id', $connectionIds)
+            ->orderByRaw("CASE WHEN status IN ('ringing', 'active') THEN 0 ELSE 1 END")
+            ->orderByDesc('started_at');
+
+        foreach (['status', 'direction'] as $column) {
+            if (!empty($arguments[$column])) {
+                $query->where($column, (string) $arguments[$column]);
+            }
+        }
+        if (!empty($arguments['phonenumber'])) {
+            $this->whereLike($query, ['from_number', 'to_number', 'answering_number'], (string) $arguments['phonenumber']);
+        }
+        [$from, $to] = $this->dateRange($arguments);
+        if ($from) {
+            $query->where('started_at', '>=', $from);
+        }
+        if ($to) {
+            $query->where('started_at', '<=', $to);
         }
 
-        try {
-            $connectionIds = UserConnectorConnection::query()
-                ->where('owner_user_id', $context->user->id)
-                ->pluck('id')
-                ->all();
-
-            if (empty($connectionIds)) {
-                return ToolResult::success(['call_sessions' => [], 'total' => 0]);
-            }
-
-            $limit = min($arguments['limit'] ?? 25, 100);
-
-            $query = UserConnectorCallSession::query()
-                ->whereIn('connection_id', $connectionIds)
-                ->orderByRaw("CASE WHEN status IN ('ringing', 'active') THEN 0 ELSE 1 END")
-                ->orderByDesc('started_at');
-
-            if (!empty($arguments['connector_key'])) {
-                $query->where('connector_key', $arguments['connector_key']);
-            }
-
-            if (!empty($arguments['status'])) {
-                $query->where('status', $arguments['status']);
-            }
-
-            if (!empty($arguments['direction'])) {
-                $query->where('direction', $arguments['direction']);
-            }
-
-            if (!empty($arguments['connection_id'])) {
-                $query->where('connection_id', (int) $arguments['connection_id']);
-            }
-
-            $sessions = $query->limit($limit)->get();
-
-            $result = $sessions->map(function (UserConnectorCallSession $session) {
-                return [
-                    'id' => $session->id,
-                    'connection_id' => $session->connection_id,
-                    'connector_key' => $session->connector_key,
-                    'external_call_id' => $session->external_call_id,
-                    'direction' => $session->direction,
-                    'status' => $session->status,
-                    'from_number' => $session->from_number,
-                    'to_number' => $session->to_number,
-                    'answering_number' => $session->answering_number,
-                    'started_at' => $session->started_at?->toIso8601String(),
-                    'answered_at' => $session->answered_at?->toIso8601String(),
-                    'ended_at' => $session->ended_at?->toIso8601String(),
-                    'duration' => $session->durationForHumans(),
-                    'duration_seconds' => $session->duration_seconds,
-                    'hangup_cause' => $session->hangup_cause,
-                    'meta' => $session->meta ?? [],
-                ];
-            })->all();
-
-            return ToolResult::success([
-                'call_sessions' => $result,
-                'total' => count($result),
-            ]);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
-        }
+        return ToolResult::success($this->paginate($query, $arguments, 'call_sessions', fn (UserConnectorCallSession $s) => array_filter([
+            'id' => $s->id,
+            'connection_id' => $s->connection_id,
+            'connector_key' => $s->connector_key,
+            'external_call_id' => $s->external_call_id,
+            'direction' => $s->direction,
+            'status' => $s->status,
+            'from_number' => $s->from_number,
+            'to_number' => $s->to_number,
+            'answering_number' => $s->answering_number,
+            'started_at' => $s->started_at?->toIso8601String(),
+            'answered_at' => $s->answered_at?->toIso8601String(),
+            'ended_at' => $s->ended_at?->toIso8601String(),
+            'duration' => $s->durationForHumans(),
+            'duration_seconds' => $s->duration_seconds,
+            'hangup_cause' => $s->hangup_cause,
+            'meta' => $s->meta ?: null,
+        ], fn ($v) => $v !== null && $v !== '')));
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'query',
-            'tags' => ['user-connectors', 'call-sessions', 'calls', 'telephony', 'sipgate', 'ringcentral', 'microsoft365'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'safe',
-            'cost_class' => 'database',
-        ];
+        return self::readMetadata(['call-sessions', 'calls', 'telephony', 'history', 'sipgate', 'ringcentral', 'microsoft365']);
     }
 }

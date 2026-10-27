@@ -2,14 +2,11 @@
 
 namespace Platform\UserConnectors\Tools;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorMeetingSession;
 
-class ListMeetingSessionsTool implements ToolContract, ToolMetadataContract
+class ListMeetingSessionsTool extends ConnectorTool
 {
     public function getName(): string
     {
@@ -18,112 +15,93 @@ class ListMeetingSessionsTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Listet Meeting Sessions (Termine) des Users auf. Zeigt Organizer, Betreff, Zeitraum, Ort und Status. Status wird automatisch aktualisiert. Filterbar nach Connector, Status, Richtung.';
+        return 'Lokal gespeicherte Termine/Meetings (per Webhook synchronisiert) mit Organisator, Teilnehmern, Ort, Teams-Link. '
+            . 'Status wird aus der Zeit berechnet (upcoming, in_progress, completed) bzw. cancelled/deleted. '
+            . 'Für den Live-Kalender inkl. Ganztags/Frei-Belegt: user-connectors.microsoft365.calendar.list.';
     }
 
     public function getSchema(): array
     {
         return [
             'type' => 'object',
-            'properties' => [
-                'connector_key' => ['type' => 'string', 'description' => 'Filter nach Connector: microsoft365.'],
-                'status' => ['type' => 'string', 'description' => 'Filter nach Status: upcoming, in_progress, completed, cancelled, deleted.'],
-                'direction' => ['type' => 'string', 'description' => 'Filter nach Richtung: inbound (Teilnehmer), outbound (Organizer).'],
-                'limit' => ['type' => 'integer', 'description' => 'Anzahl Ergebnisse. Standard: 25, Max: 100.'],
+            'properties' => self::listProperties(['microsoft365'], 'Terminbeginn') + [
+                'status' => ['type' => 'string', 'enum' => ['upcoming', 'in_progress', 'completed', 'cancelled', 'deleted']],
+                'direction' => ['type' => 'string', 'enum' => ['inbound', 'outbound'], 'description' => 'inbound = eingeladen, outbound = selbst organisiert.'],
+                'search' => ['type' => 'string', 'description' => 'Teil von Betreff, Ort oder Organisator.'],
             ],
-            'required' => [],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
+        $connectionIds = $this->scopedConnectionIds($context->user, $arguments, ['microsoft365']);
+        $now = now();
+
+        $query = UserConnectorMeetingSession::query()
+            ->whereIn('connection_id', $connectionIds)
+            ->orderByRaw('CASE WHEN status NOT IN (?, ?) AND end_at >= ? THEN 0 ELSE 1 END', ['cancelled', 'deleted', $now])
+            ->orderByRaw('CASE WHEN end_at >= ? THEN start_at END ASC', [$now])
+            ->orderByDesc('start_at');
+
+        // Status aus der Zeit statt aus der (evtl. veralteten) Spalte — ohne beim Lesen zu schreiben.
+        $active = fn ($q) => $q->whereNotIn('status', ['cancelled', 'deleted']);
+        match ($arguments['status'] ?? null) {
+            'upcoming' => $query->where($active)->where('start_at', '>', $now),
+            'in_progress' => $query->where($active)->where('start_at', '<=', $now)->where('end_at', '>=', $now),
+            'completed' => $query->where($active)->where('end_at', '<', $now),
+            'cancelled', 'deleted' => $query->where('status', $arguments['status']),
+            null, '' => null,
+            default => throw new \InvalidArgumentException('Unbekannter status.'),
+        };
+
+        if (!empty($arguments['direction'])) {
+            $query->where('direction', (string) $arguments['direction']);
+        }
+        if (!empty($arguments['search'])) {
+            $this->whereLike($query, ['subject', 'location', 'organizer_name', 'organizer_address'], (string) $arguments['search']);
+        }
+        [$from, $to] = $this->dateRange($arguments);
+        if ($from) {
+            $query->where('start_at', '>=', $from);
+        }
+        if ($to) {
+            $query->where('start_at', '<=', $to);
         }
 
-        try {
-            $connectionIds = UserConnectorConnection::query()
-                ->where('owner_user_id', $context->user->id)
-                ->pluck('id')
-                ->all();
+        return ToolResult::success($this->paginate($query, $arguments, 'meeting_sessions', fn (UserConnectorMeetingSession $s) => array_filter([
+            'id' => $s->id,
+            'connection_id' => $s->connection_id,
+            'external_event_id' => $s->external_event_id,
+            'direction' => $s->direction,
+            'status' => $this->effectiveStatus($s, $now),
+            'subject' => $s->subject,
+            'organizer_name' => $s->organizer_name,
+            'organizer_address' => $s->organizer_address,
+            'attendee_addresses' => $s->attendee_addresses ?: null,
+            'location' => $s->location,
+            'online_meeting_url' => $s->online_meeting_url,
+            'start_at' => $s->start_at?->toIso8601String(),
+            'end_at' => $s->end_at?->toIso8601String(),
+            'duration' => $s->durationForHumans(),
+            'body_preview' => $s->body_preview,
+        ], fn ($v) => $v !== null && $v !== '')));
+    }
 
-            if (empty($connectionIds)) {
-                return ToolResult::success(['meeting_sessions' => [], 'total' => 0]);
-            }
-
-            // Auto-update status for active meetings
-            $activeSessions = UserConnectorMeetingSession::query()
-                ->whereIn('connection_id', $connectionIds)
-                ->whereIn('status', ['upcoming', 'in_progress'])
-                ->get();
-
-            foreach ($activeSessions as $session) {
-                $session->updateStatusFromTime();
-            }
-
-            $limit = min($arguments['limit'] ?? 25, 100);
-
-            $query = UserConnectorMeetingSession::query()
-                ->whereIn('connection_id', $connectionIds)
-                ->orderByRaw("CASE WHEN status IN ('upcoming', 'in_progress') THEN 0 ELSE 1 END")
-                ->orderByDesc('start_at');
-
-            if (!empty($arguments['connector_key'])) {
-                $query->where('connector_key', $arguments['connector_key']);
-            }
-
-            if (!empty($arguments['status'])) {
-                $query->where('status', $arguments['status']);
-            }
-
-            if (!empty($arguments['direction'])) {
-                $query->where('direction', $arguments['direction']);
-            }
-
-            $sessions = $query->limit($limit)->get();
-
-            $result = $sessions->map(function (UserConnectorMeetingSession $session) {
-                return [
-                    'id' => $session->id,
-                    'connection_id' => $session->connection_id,
-                    'connector_key' => $session->connector_key,
-                    'external_event_id' => $session->external_event_id,
-                    'direction' => $session->direction,
-                    'status' => $session->status,
-                    'organizer_address' => $session->organizer_address,
-                    'organizer_name' => $session->organizer_name,
-                    'attendee_addresses' => $session->attendee_addresses,
-                    'subject' => $session->subject,
-                    'body_preview' => $session->body_preview,
-                    'location' => $session->location,
-                    'is_online_meeting' => $session->is_online_meeting,
-                    'online_meeting_url' => $session->online_meeting_url,
-                    'start_at' => $session->start_at?->toIso8601String(),
-                    'end_at' => $session->end_at?->toIso8601String(),
-                    'duration' => $session->durationForHumans(),
-                    'duration_minutes' => $session->duration_minutes,
-                    'meta' => $session->meta ?? [],
-                ];
-            })->all();
-
-            return ToolResult::success([
-                'meeting_sessions' => $result,
-                'total' => count($result),
-            ]);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
+    private function effectiveStatus(UserConnectorMeetingSession $s, $now): string
+    {
+        if (in_array($s->status, ['cancelled', 'deleted'], true) || !$s->start_at || !$s->end_at) {
+            return (string) $s->status;
         }
+
+        return match (true) {
+            $now->lt($s->start_at) => 'upcoming',
+            $now->lte($s->end_at) => 'in_progress',
+            default => 'completed',
+        };
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'query',
-            'tags' => ['user-connectors', 'meeting-sessions', 'calendar', 'meetings', 'microsoft365'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'safe',
-            'cost_class' => 'database',
-        ];
+        return self::readMetadata(['meeting-sessions', 'meetings', 'calendar', 'termine', 'history', 'microsoft365']);
     }
 }

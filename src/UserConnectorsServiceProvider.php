@@ -190,6 +190,22 @@ class UserConnectorsServiceProvider extends ServiceProvider
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\FindAvailabilityTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\RenewSubscriptionsTool());
             $registry->register(new \Platform\UserConnectors\Tools\Microsoft365\ListRoomsTool());
+
+            // Zusammengelegte Tools — alte Namen als versteckte Aliase
+            $registry->register(new \Platform\UserConnectors\Tools\DeprecatedAliasTool(
+                'user-connectors.microsoft365.teams.list',
+                $registry->get('user-connectors.microsoft365.teams.channels.list'),
+            ));
+            $registry->register(new \Platform\UserConnectors\Tools\DeprecatedAliasTool(
+                'user-connectors.microsoft365.teams.channel.reply',
+                $registry->get('user-connectors.microsoft365.teams.channel.send'),
+                [],
+                ['message_id' => 'reply_to_message_id'],
+            ));
+            $registry->register(new \Platform\UserConnectors\Tools\DeprecatedAliasTool(
+                'user-connectors.microsoft365.calendar.room_lists.list',
+                $registry->get('user-connectors.microsoft365.calendar.rooms.list'),
+            ));
         } catch (\Throwable $e) {
             \Log::warning('UserConnectors: Microsoft 365 Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
         }
@@ -197,29 +213,31 @@ class UserConnectorsServiceProvider extends ServiceProvider
         try {
             $registry = resolve(\Platform\Core\Tools\ToolRegistry::class);
 
-            // RingCentral Tools
-            $registry->register(new \Platform\UserConnectors\Tools\RingCentral\TestConnectionTool());
-            $registry->register(new \Platform\UserConnectors\Tools\RingCentral\GetCallLogTool());
-            $registry->register(new \Platform\UserConnectors\Tools\RingCentral\SendSMSTool());
-            $registry->register(new \Platform\UserConnectors\Tools\RingCentral\ListSMSTool());
-            $registry->register(new \Platform\UserConnectors\Tools\RingCentral\ReplySMSTool());
-            $registry->register(new \Platform\UserConnectors\Tools\RingCentral\InitiateCallTool());
-        } catch (\Throwable $e) {
-            \Log::warning('UserConnectors: RingCentral Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
-        }
+            // Telefonie (Sipgate, RingCentral, Vodafone) — ein Tool pro Funktion
+            $telephony = [
+                'sms.send' => new \Platform\UserConnectors\Tools\Telephony\SendSmsTool(),
+                'sms.reply' => new \Platform\UserConnectors\Tools\Telephony\ReplySmsTool(),
+                'sms.list' => new \Platform\UserConnectors\Tools\Telephony\ListSmsTool(),
+                'calls.initiate' => new \Platform\UserConnectors\Tools\Telephony\InitiateCallTool(),
+                'calls.log' => new \Platform\UserConnectors\Tools\Telephony\CallLogTool(),
+                'test' => new \Platform\UserConnectors\Tools\Telephony\TestConnectionTool(),
+            ];
+            foreach ($telephony as $tool) {
+                $registry->register($tool);
+            }
 
-        try {
-            $registry = resolve(\Platform\Core\Tools\ToolRegistry::class);
-
-            // Sipgate Tools
-            $registry->register(new \Platform\UserConnectors\Tools\Sipgate\TestConnectionTool());
-            $registry->register(new \Platform\UserConnectors\Tools\Sipgate\GetCallLogTool());
-            $registry->register(new \Platform\UserConnectors\Tools\Sipgate\SendSMSTool());
-            $registry->register(new \Platform\UserConnectors\Tools\Sipgate\ListSMSTool());
-            $registry->register(new \Platform\UserConnectors\Tools\Sipgate\ReplySMSTool());
-            $registry->register(new \Platform\UserConnectors\Tools\Sipgate\InitiateCallTool());
+            // Alte anbieterspezifische Namen (u. a. Inbox-Routen) als versteckte Aliase
+            foreach (['sipgate', 'ringcentral'] as $provider) {
+                foreach ($telephony as $suffix => $tool) {
+                    $registry->register(new \Platform\UserConnectors\Tools\DeprecatedAliasTool(
+                        "user-connectors.{$provider}.{$suffix}",
+                        $tool,
+                        ['connector_key' => $provider],
+                    ));
+                }
+            }
         } catch (\Throwable $e) {
-            \Log::warning('UserConnectors: Sipgate Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
+            \Log::warning('UserConnectors: Telefonie-Tool-Registrierung fehlgeschlagen', ['error' => $e->getMessage()]);
         }
 
         try {

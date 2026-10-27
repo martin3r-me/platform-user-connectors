@@ -121,4 +121,46 @@ class ConnectionResolver
 
         return $own->merge($shared);
     }
+
+    /**
+     * Alle Connections, auf die der User Zugriff hat (eigene + geteilte),
+     * optional auf Connector-Keys eingeschränkt. Eigene zuerst, Default vorn.
+     *
+     * @param array<int, string> $connectorKeys
+     */
+    public function accessibleConnections(User $user, array $connectorKeys = [], bool $activeOnly = false): Collection
+    {
+        $userTeamIds = $user->teams()->pluck('teams.id')->toArray();
+
+        $query = UserConnectorConnection::query()
+            ->with('connector')
+            ->where(function ($q) use ($user, $userTeamIds) {
+                $q->where('owner_user_id', $user->id)
+                    ->orWhere(function ($shared) use ($user, $userTeamIds) {
+                        $shared->where('status', 'active')
+                            ->whereHas('shares', function ($share) use ($user, $userTeamIds) {
+                                $share->where(fn ($s) => $s->whereNull('user_id')->orWhere('user_id', $user->id))
+                                    ->where(function ($s) use ($userTeamIds) {
+                                        $s->whereNull('team_id');
+                                        if (!empty($userTeamIds)) {
+                                            $s->orWhereIn('team_id', $userTeamIds);
+                                        }
+                                    });
+                            });
+                    });
+            });
+
+        if ($connectorKeys !== []) {
+            $query->whereHas('connector', fn ($q) => $q->whereIn('key', $connectorKeys));
+        }
+        if ($activeOnly) {
+            $query->where('status', 'active');
+        }
+
+        return $query->get()->sortBy([
+            fn ($a, $b) => ((int) $b->owner_user_id === (int) $user->id) <=> ((int) $a->owner_user_id === (int) $user->id),
+            fn ($a, $b) => (int) $b->is_default <=> (int) $a->is_default,
+            fn ($a, $b) => $a->id <=> $b->id,
+        ])->values();
+    }
 }

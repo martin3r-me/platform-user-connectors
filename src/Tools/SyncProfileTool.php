@@ -2,20 +2,17 @@
 
 namespace Platform\UserConnectors\Tools;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorPhoneNumber;
 use Platform\UserConnectors\Models\UserConnectorDevice;
 use Illuminate\Support\Facades\Http;
-use Platform\UserConnectors\Services\ConnectionResolver;
 use Platform\UserConnectors\Services\Sipgate\SipgateConnectorService;
 use Platform\UserConnectors\Services\RingCentral\RingCentralConnectorService;
 use Platform\UserConnectors\Services\Vodafone\VodafoneConnectorService;
+use Platform\UserConnectors\Tools\Telephony\TelephonyTool;
 
-class SyncProfileTool implements ToolContract, ToolMetadataContract
+class SyncProfileTool extends ConnectorTool
 {
     public function getName(): string
     {
@@ -32,33 +29,19 @@ class SyncProfileTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer', 'description' => 'Connection-ID. Wenn leer, wird die Standard-Verbindung verwendet.'],
-                'connector_key' => ['type' => 'string', 'description' => 'Connector: sipgate, ringcentral, vodafone. Wird automatisch erkannt wenn connection_id angegeben.'],
+                'connection_id' => ['type' => 'integer', 'description' => 'Connection-ID. Ohne: erste aktive Telefonie-Verbindung (eigene vor geteilten).'],
+                'connector_key' => ['type' => 'string', 'enum' => TelephonyTool::PROVIDERS, 'description' => 'Optional. Anbieter, wenn ohne connection_id.'],
                 'diagnose_only' => ['type' => 'boolean', 'description' => 'Nur Diagnose ausgeben, keinen Sync auslösen.'],
             ],
             'required' => [],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
-        }
+        $connection = $this->resolveConnection($context->user, $arguments, TelephonyTool::PROVIDERS);
 
         try {
-            $resolver = app(ConnectionResolver::class);
-            $connection = null;
-
-            if (!empty($arguments['connection_id'])) {
-                $connection = $resolver->resolveById((int) $arguments['connection_id'], $context->user);
-            } elseif (!empty($arguments['connector_key'])) {
-                $connection = $resolver->resolveForUser($arguments['connector_key'], $context->user);
-            }
-
-            if (!$connection) {
-                return ToolResult::error('NOT_FOUND', 'Keine Verbindung gefunden.');
-            }
 
             $connection->loadMissing('connector');
             $connectorKey = $connection->connector?->key;
@@ -136,7 +119,8 @@ class SyncProfileTool implements ToolContract, ToolMetadataContract
                     $syncError = "Kein syncProfile für Connector '{$connectorKey}'.";
                 }
             } catch (\Throwable $e) {
-                $syncError = $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine();
+                report($e);
+                $syncError = $e->getMessage();
             }
 
             // Re-check after sync
@@ -156,7 +140,9 @@ class SyncProfileTool implements ToolContract, ToolMetadataContract
 
             return ToolResult::success($diagnose);
         } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+            report($e);
+
+            return ToolResult::error('Profil-Sync fehlgeschlagen: ' . $e->getMessage(), 'EXECUTION_ERROR');
         }
     }
 

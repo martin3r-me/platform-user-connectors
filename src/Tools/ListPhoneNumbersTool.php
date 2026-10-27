@@ -2,15 +2,12 @@
 
 namespace Platform\UserConnectors\Tools;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorPhoneNumber;
-use Platform\UserConnectors\Services\ConnectionResolver;
+use Platform\UserConnectors\Tools\Telephony\TelephonyTool;
 
-class ListPhoneNumbersTool implements ToolContract, ToolMetadataContract
+class ListPhoneNumbersTool extends ConnectorTool
 {
     public function getName(): string
     {
@@ -19,7 +16,8 @@ class ListPhoneNumbersTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Listet alle Rufnummern einer Connector-Verbindung auf. Zeigt Nummer, Typ, Fähigkeiten (voice/sms/fax), Standard-Status und Provider-ID. Filterbar nach Connector (sipgate, ringcentral, vodafone) und Fähigkeit.';
+        return 'Listet die Telefonnummern der Telefonie-Verbindungen (eigene + geteilte) mit Fähigkeiten (voice, sms, fax) und Standardnummer. '
+            . 'Nutzbar als from in telephony.calls.initiate (RingCentral/Vodafone). Leer? → user-connectors.profile.sync.';
     }
 
     public function getSchema(): array
@@ -27,87 +25,44 @@ class ListPhoneNumbersTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer', 'description' => 'Connection-ID. Wenn leer, werden Nummern aller Verbindungen des Users zurückgegeben.'],
-                'connector_key' => ['type' => 'string', 'description' => 'Filter nach Connector: sipgate, ringcentral, vodafone.'],
-                'capability' => ['type' => 'string', 'description' => 'Filter nach Fähigkeit: voice, sms, fax.'],
+                'connection_id' => ['type' => 'integer'],
+                'connector_key' => ['type' => 'string', 'enum' => TelephonyTool::PROVIDERS],
+                'include_shared' => ['type' => 'boolean', 'description' => 'Default true.'],
+                'capability' => ['type' => 'string', 'enum' => ['voice', 'sms', 'fax']],
             ],
-            'required' => [],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
+        $query = UserConnectorPhoneNumber::query()
+            ->whereIn('connection_id', $this->scopedConnectionIds($context->user, $arguments, TelephonyTool::PROVIDERS))
+            ->with('connection.connector')
+            ->orderByDesc('is_default')
+            ->orderBy('number');
+
+        if (!empty($arguments['capability'])) {
+            $query->withCapability((string) $arguments['capability']);
         }
 
-        try {
-            $resolver = app(ConnectionResolver::class);
+        $numbers = $query->get()->map(fn (UserConnectorPhoneNumber $phone) => array_filter([
+            'id' => $phone->id,
+            'connection_id' => $phone->connection_id,
+            'provider' => $phone->connection?->connector?->key,
+            'number' => $phone->number,
+            'label' => $phone->label,
+            'type' => $phone->type,
+            'capabilities' => $phone->capabilities,
+            'is_default' => (bool) $phone->is_default,
+            'external_id' => $phone->external_id,
+            'phoneline' => $phone->meta['phonelineAlias'] ?? null,
+        ], fn ($v) => $v !== null))->values()->all();
 
-            if (!empty($arguments['connection_id'])) {
-                $connection = $resolver->resolveById((int) $arguments['connection_id'], $context->user);
-                if (!$connection) {
-                    return ToolResult::error('NOT_FOUND', 'Verbindung nicht gefunden oder kein Zugriff.');
-                }
-                $connectionIds = [$connection->id];
-            } elseif (!empty($arguments['connector_key'])) {
-                $connections = $resolver->resolveAllForUser($arguments['connector_key'], $context->user);
-                $connectionIds = $connections->pluck('id')->all();
-            } else {
-                // All connections of the user
-                $connectionIds = UserConnectorConnection::query()
-                    ->where('owner_user_id', $context->user->id)
-                    ->where('status', 'active')
-                    ->pluck('id')
-                    ->all();
-            }
-
-            if (empty($connectionIds)) {
-                return ToolResult::success(['phone_numbers' => [], 'total' => 0]);
-            }
-
-            $query = UserConnectorPhoneNumber::query()
-                ->whereIn('connection_id', $connectionIds)
-                ->with('connection.connector');
-
-            if (!empty($arguments['capability'])) {
-                $query->withCapability($arguments['capability']);
-            }
-
-            $numbers = $query->orderByDesc('is_default')->orderBy('number')->get();
-
-            $result = $numbers->map(fn (UserConnectorPhoneNumber $phone) => array_filter([
-                'id' => $phone->id,
-                'connection_id' => $phone->connection_id,
-                'connector' => $phone->connection?->connector?->key,
-                'connection_name' => $phone->connection?->name,
-                'number' => $phone->number,
-                'label' => $phone->label,
-                'type' => $phone->type,
-                'capabilities' => $phone->capabilities,
-                'is_default' => $phone->is_default,
-                'external_id' => $phone->external_id,
-                'phoneline' => $phone->meta['phonelineAlias'] ?? null,
-            ], fn ($v) => $v !== null))->all();
-
-            return ToolResult::success([
-                'phone_numbers' => $result,
-                'total' => count($result),
-            ]);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
-        }
+        return ToolResult::success(['phone_numbers' => $numbers, 'total' => count($numbers)]);
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'query',
-            'tags' => ['telefonie', 'rufnummern', 'phone', 'numbers', 'sipgate', 'ringcentral', 'vodafone'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'safe',
-            'cost_class' => 'database',
-        ];
+        return self::readMetadata(['phone-numbers', 'telephony', 'sipgate', 'ringcentral', 'vodafone']);
     }
 }

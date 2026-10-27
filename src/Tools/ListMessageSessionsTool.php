@@ -2,15 +2,14 @@
 
 namespace Platform\UserConnectors\Tools;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorMessageSession;
 
-class ListMessageSessionsTool implements ToolContract, ToolMetadataContract
+class ListMessageSessionsTool extends ConnectorTool
 {
+    private const KEYS = ['microsoft365', 'sipgate', 'ringcentral', 'vodafone'];
+
     public function getName(): string
     {
         return 'user-connectors.message-sessions.list';
@@ -18,101 +17,70 @@ class ListMessageSessionsTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Listet Message Sessions (Teams Chat & SMS) des Users auf. Zeigt Absender, Nachricht, Typ und Richtung. Filterbar nach Connector, Nachrichtentyp, Richtung und Chat-ID.';
+        return 'Lokal gespeicherte Kurznachrichten — Teams-Chats und SMS — neueste zuerst. Filter: Typ, Richtung, chat_id, Absender, Text, Zeitraum. '
+            . 'Live lesen: microsoft365.teams.chat.messages.list bzw. telephony.sms.list.';
     }
 
     public function getSchema(): array
     {
         return [
             'type' => 'object',
-            'properties' => [
-                'connector_key' => ['type' => 'string', 'description' => 'Filter nach Connector: microsoft365, sipgate, ringcentral, vodafone.'],
-                'message_type' => ['type' => 'string', 'description' => 'Filter nach Typ: teams_chat, sms.'],
-                'direction' => ['type' => 'string', 'description' => 'Filter nach Richtung: inbound, outbound.'],
-                'chat_id' => ['type' => 'string', 'description' => 'Filter nach Teams Chat ID.'],
-                'limit' => ['type' => 'integer', 'description' => 'Anzahl Ergebnisse. Standard: 25, Max: 100.'],
+            'properties' => self::listProperties(self::KEYS, 'Gesendet') + [
+                'message_type' => ['type' => 'string', 'enum' => ['teams_chat', 'sms']],
+                'direction' => ['type' => 'string', 'enum' => ['inbound', 'outbound']],
+                'chat_id' => ['type' => 'string', 'description' => 'Nur Nachrichten dieses Teams-Chats.'],
+                'from' => ['type' => 'string', 'description' => 'Teil von Absender (Name/Nummer).'],
+                'search' => ['type' => 'string', 'description' => 'Teil des Nachrichtentexts.'],
             ],
-            'required' => [],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
+        $connectionIds = $this->scopedConnectionIds($context->user, $arguments, self::KEYS);
+
+        $query = UserConnectorMessageSession::query()
+            ->whereIn('connection_id', $connectionIds)
+            ->orderByDesc('sent_at');
+
+        foreach (['message_type', 'direction', 'chat_id'] as $column) {
+            if (!empty($arguments[$column])) {
+                $query->where($column, (string) $arguments[$column]);
+            }
+        }
+        if (!empty($arguments['from'])) {
+            $this->whereLike($query, ['from_identifier'], (string) $arguments['from']);
+        }
+        if (!empty($arguments['search'])) {
+            $this->whereLike($query, ['body_preview'], (string) $arguments['search']);
+        }
+        [$from, $to] = $this->dateRange($arguments);
+        if ($from) {
+            $query->where('sent_at', '>=', $from);
+        }
+        if ($to) {
+            $query->where('sent_at', '<=', $to);
         }
 
-        try {
-            $connectionIds = UserConnectorConnection::query()
-                ->where('owner_user_id', $context->user->id)
-                ->pluck('id')
-                ->all();
-
-            if (empty($connectionIds)) {
-                return ToolResult::success(['message_sessions' => [], 'total' => 0]);
-            }
-
-            $limit = min($arguments['limit'] ?? 25, 100);
-
-            $query = UserConnectorMessageSession::query()
-                ->whereIn('connection_id', $connectionIds)
-                ->orderByDesc('sent_at');
-
-            if (!empty($arguments['connector_key'])) {
-                $query->where('connector_key', $arguments['connector_key']);
-            }
-
-            if (!empty($arguments['message_type'])) {
-                $query->where('message_type', $arguments['message_type']);
-            }
-
-            if (!empty($arguments['direction'])) {
-                $query->where('direction', $arguments['direction']);
-            }
-
-            if (!empty($arguments['chat_id'])) {
-                $query->where('chat_id', $arguments['chat_id']);
-            }
-
-            $sessions = $query->limit($limit)->get();
-
-            $result = $sessions->map(function (UserConnectorMessageSession $session) {
-                return [
-                    'id' => $session->id,
-                    'connection_id' => $session->connection_id,
-                    'connector_key' => $session->connector_key,
-                    'external_message_id' => $session->external_message_id,
-                    'message_type' => $session->message_type,
-                    'direction' => $session->direction,
-                    'from_identifier' => $session->from_identifier,
-                    'from_user_id' => $session->from_user_id,
-                    'to_identifier' => $session->to_identifier,
-                    'body_preview' => $session->body_preview,
-                    'chat_id' => $session->chat_id,
-                    'importance' => $session->importance,
-                    'sent_at' => $session->sent_at?->toIso8601String(),
-                    'meta' => $session->meta ?? [],
-                ];
-            })->all();
-
-            return ToolResult::success([
-                'message_sessions' => $result,
-                'total' => count($result),
-            ]);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
-        }
+        return ToolResult::success($this->paginate($query, $arguments, 'message_sessions', fn (UserConnectorMessageSession $s) => array_filter([
+            'id' => $s->id,
+            'connection_id' => $s->connection_id,
+            'connector_key' => $s->connector_key,
+            'external_message_id' => $s->external_message_id,
+            'message_type' => $s->message_type,
+            'direction' => $s->direction,
+            'from_identifier' => $s->from_identifier,
+            'from_user_id' => $s->from_user_id,
+            'to_identifier' => $s->to_identifier,
+            'body_preview' => $s->body_preview,
+            'chat_id' => $s->chat_id,
+            'importance' => $s->importance,
+            'sent_at' => $s->sent_at?->toIso8601String(),
+        ], fn ($v) => $v !== null && $v !== '')));
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'query',
-            'tags' => ['user-connectors', 'message-sessions', 'teams', 'sms', 'chat', 'microsoft365'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'safe',
-            'cost_class' => 'database',
-        ];
+        return self::readMetadata(['message-sessions', 'teams', 'chat', 'sms', 'history', 'microsoft365', 'sipgate', 'ringcentral']);
     }
 }

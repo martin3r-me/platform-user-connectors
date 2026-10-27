@@ -2,15 +2,12 @@
 
 namespace Platform\UserConnectors\Tools;
 
-use Platform\Core\Contracts\ToolContract;
 use Platform\Core\Contracts\ToolContext;
-use Platform\Core\Contracts\ToolMetadataContract;
 use Platform\Core\Contracts\ToolResult;
-use Platform\UserConnectors\Models\UserConnectorConnection;
 use Platform\UserConnectors\Models\UserConnectorDevice;
-use Platform\UserConnectors\Services\ConnectionResolver;
+use Platform\UserConnectors\Tools\Telephony\TelephonyTool;
 
-class ListDevicesTool implements ToolContract, ToolMetadataContract
+class ListDevicesTool extends ConnectorTool
 {
     public function getName(): string
     {
@@ -19,7 +16,8 @@ class ListDevicesTool implements ToolContract, ToolMetadataContract
 
     public function getDescription(): string
     {
-        return 'Listet alle Geräte (Telefone, Softphones) einer Connector-Verbindung auf. Zeigt Name, Typ (softphone/deskphone/mobile/webrtc), Online-Status und Provider-ID. Filterbar nach Connector und Online-Status.';
+        return 'Listet die Telefonie-Geräte (Softphone, Tischtelefon, Mobil) der Verbindungen mit Online-Status. '
+            . 'external_id ist bei Sipgate das from für telephony.calls.initiate. Leer? → user-connectors.profile.sync.';
     }
 
     public function getSchema(): array
@@ -27,83 +25,41 @@ class ListDevicesTool implements ToolContract, ToolMetadataContract
         return [
             'type' => 'object',
             'properties' => [
-                'connection_id' => ['type' => 'integer', 'description' => 'Connection-ID. Wenn leer, werden Geräte aller Verbindungen des Users zurückgegeben.'],
-                'connector_key' => ['type' => 'string', 'description' => 'Filter nach Connector: sipgate, ringcentral, vodafone.'],
-                'online_only' => ['type' => 'boolean', 'description' => 'Nur online Geräte anzeigen.'],
+                'connection_id' => ['type' => 'integer'],
+                'connector_key' => ['type' => 'string', 'enum' => TelephonyTool::PROVIDERS],
+                'include_shared' => ['type' => 'boolean', 'description' => 'Default true.'],
+                'online_only' => ['type' => 'boolean'],
             ],
-            'required' => [],
         ];
     }
 
-    public function execute(array $arguments, ToolContext $context): ToolResult
+    protected function handle(array $arguments, ToolContext $context): ToolResult
     {
-        if (!$context->user) {
-            return ToolResult::error('AUTH_ERROR', 'Benutzer nicht authentifiziert.');
+        $query = UserConnectorDevice::query()
+            ->whereIn('connection_id', $this->scopedConnectionIds($context->user, $arguments, TelephonyTool::PROVIDERS))
+            ->with('connection.connector')
+            ->orderByDesc('is_online')
+            ->orderBy('name');
+
+        if ($this->optionalBool($arguments, 'online_only')) {
+            $query->online();
         }
 
-        try {
-            $resolver = app(ConnectionResolver::class);
+        $devices = $query->get()->map(fn (UserConnectorDevice $device) => [
+            'id' => $device->id,
+            'connection_id' => $device->connection_id,
+            'provider' => $device->connection?->connector?->key,
+            'name' => $device->name,
+            'type' => $device->type,
+            'external_id' => $device->external_id,
+            'is_online' => (bool) $device->is_online,
+        ])->values()->all();
 
-            if (!empty($arguments['connection_id'])) {
-                $connection = $resolver->resolveById((int) $arguments['connection_id'], $context->user);
-                if (!$connection) {
-                    return ToolResult::error('NOT_FOUND', 'Verbindung nicht gefunden oder kein Zugriff.');
-                }
-                $connectionIds = [$connection->id];
-            } elseif (!empty($arguments['connector_key'])) {
-                $connections = $resolver->resolveAllForUser($arguments['connector_key'], $context->user);
-                $connectionIds = $connections->pluck('id')->all();
-            } else {
-                $connectionIds = UserConnectorConnection::query()
-                    ->where('owner_user_id', $context->user->id)
-                    ->where('status', 'active')
-                    ->pluck('id')
-                    ->all();
-            }
-
-            if (empty($connectionIds)) {
-                return ToolResult::success(['devices' => [], 'total' => 0]);
-            }
-
-            $query = UserConnectorDevice::query()
-                ->whereIn('connection_id', $connectionIds)
-                ->with('connection.connector');
-
-            if (!empty($arguments['online_only'])) {
-                $query->online();
-            }
-
-            $devices = $query->orderBy('name')->get();
-
-            $result = $devices->map(fn (UserConnectorDevice $device) => [
-                'id' => $device->id,
-                'connection_id' => $device->connection_id,
-                'connector' => $device->connection?->connector?->key,
-                'connection_name' => $device->connection?->name,
-                'name' => $device->name,
-                'type' => $device->type,
-                'external_id' => $device->external_id,
-                'is_online' => $device->is_online,
-            ])->all();
-
-            return ToolResult::success([
-                'devices' => $result,
-                'total' => count($result),
-            ]);
-        } catch (\Throwable $e) {
-            return ToolResult::error('EXECUTION_ERROR', 'Fehler: ' . $e->getMessage());
-        }
+        return ToolResult::success(['devices' => $devices, 'total' => count($devices)]);
     }
 
     public function getMetadata(): array
     {
-        return [
-            'category' => 'query',
-            'tags' => ['telefonie', 'geräte', 'devices', 'phone', 'softphone', 'sipgate', 'ringcentral', 'vodafone'],
-            'read_only' => true,
-            'requires_auth' => true,
-            'risk_level' => 'safe',
-            'cost_class' => 'database',
-        ];
+        return self::readMetadata(['devices', 'telephony', 'sipgate', 'ringcentral', 'vodafone']);
     }
 }
