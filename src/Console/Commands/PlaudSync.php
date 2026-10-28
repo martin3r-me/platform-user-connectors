@@ -111,11 +111,16 @@ class PlaudSync extends Command
                 continue; // ohne Transkript kein sinnvoller Import
             }
 
-            // Summary holt die Inbox selbst (natives Enrichment) → hier nicht mehr nötig.
+            // Plauds EIGENE Zusammenfassung (Markdown) mitnehmen — landet als
+            // sekundäre Enrichment am Eingang-Item (kostenlos, schon geschrieben).
+            // Unser eigenes Enrichment läuft zusätzlich (als primär, wenn Credits da).
+            $note = $plaud->summary($access, $full);
+
             $result = $tool->execute([
                 'file_id'      => $fileId,
                 'title'        => (string) ($file['name'] ?? $full['name'] ?? 'Plaud-Aufnahme'),
                 'segments'     => $segments,
+                'note_content' => $note,
                 'metadata'     => [
                     'start_at'      => $file['start_at'] ?? $full['start_at'] ?? null,
                     'duration_ms'   => $file['duration'] ?? $full['duration'] ?? null,
