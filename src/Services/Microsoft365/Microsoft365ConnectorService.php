@@ -116,7 +116,10 @@ class Microsoft365ConnectorService
                 ];
             }
 
-            $connection->status = 'error';
+            // Nur Auth-Fehler (401/403) markieren die Verbindung als defekt; 5xx/429 sind transient.
+            if (in_array($response->status(), [401, 403], true)) {
+                $connection->status = 'error';
+            }
             $connection->last_error = 'HTTP ' . $response->status();
             $connection->last_tested_at = now();
             $connection->save();
@@ -126,7 +129,7 @@ class Microsoft365ConnectorService
                 'message' => 'API-Fehler: HTTP ' . $response->status(),
             ];
         } catch (\Exception $e) {
-            $connection->status = 'error';
+            // Netzwerkfehler sind transient: Status bleibt, damit geteilte Verbindungen nicht verschwinden.
             $connection->last_error = $e->getMessage();
             $connection->last_tested_at = now();
             $connection->save();
