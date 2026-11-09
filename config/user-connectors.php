@@ -24,6 +24,7 @@ return [
                 'Chat.Read', 'Chat.ReadWrite',
                 'ChannelMessage.Read.All', 'ChannelMessage.Send',
                 'Team.ReadBasic.All', 'Channel.ReadBasic.All',
+                'Group.Read.All', 'Files.Read.All', 'Sites.Read.All',
             ],
             'extra_params' => ['prompt' => 'select_account'],
         ],
