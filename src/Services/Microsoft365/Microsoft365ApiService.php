@@ -188,8 +188,8 @@ class Microsoft365ApiService
                 'error' => $e->getMessage(),
             ]);
 
+            // Transient (Netzwerk/Timeout): Status nicht auf 'error' setzen, nur Fehler merken.
             $connection->update([
-                'status' => 'error',
                 'last_error' => $e->getMessage(),
                 'last_tested_at' => now(),
             ]);
